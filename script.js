@@ -54,8 +54,8 @@ function initInstructionLine() {
 
   const line = document.createElement("div");
   line.id = "crumbs"; // matches the ID used in the music version layout
-  line.textContent = "Select a band from the list.";
-  line.style.fontSize = "12px";
+  line.textContent = "NOTE: This is a work in progress, and some things will be missing for a bit. Bear with me as I get this coded.";
+  line.style.fontSize = "15px";
   line.style.opacity = "0.85";
   line.style.textAlign = "center";
   line.style.marginTop = "6px";
