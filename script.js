@@ -209,6 +209,41 @@ function clearResults() {
   resultsEl.style.display = "block";
 }
 
+function formatPrettyDate(raw) {
+  if (!raw) return "";
+
+  // Expect MM/DD/YY or MM/DD/YYYY
+  const parts = raw.split("/");
+  if (parts.length !== 3) return raw;
+
+  let [m, d, y] = parts.map((p) => p.trim());
+  if (!m || !d || !y) return raw;
+
+  // Normalize year
+  if (y.length === 2) y = "20" + y;
+  const year = Number(y);
+  const month = Number(m) - 1;
+  const day = Number(d);
+
+  const date = new Date(year, month, day);
+  if (isNaN(date.getTime())) return raw;
+
+  const monthName = date.toLocaleString("en-US", { month: "long" });
+
+  // Ordinal suffix
+  const suffix =
+    day % 10 === 1 && day !== 11
+      ? "st"
+      : day % 10 === 2 && day !== 12
+      ? "nd"
+      : day % 10 === 3 && day !== 13
+      ? "rd"
+      : "th";
+
+  return `${monthName} ${day}${suffix}, ${year}`;
+}
+
+
 function renderShowsCards(rows) {
   clearResults();
   if (!resultsEl) return;
@@ -295,11 +330,16 @@ function renderShowsCards(rows) {
     titleEl.style.color = "#e5e7eb";
 
     const dateEl = document.createElement("div");
-    dateEl.textContent = rawDate || "";
-    dateEl.style.fontSize = "12px";
-    dateEl.style.color = "rgba(203,213,225,0.85)";
+	dateEl.textContent = formatPrettyDate(rawDate);
+	dateEl.style.fontSize = "12px";
+	dateEl.style.color = "rgb(203,213,225,0.85)";
 
-    const venueBits = [venue, city, state].filter(Boolean).join(" • ");
+    let venueBits = "";
+	if (venue && city && state) venueBits = `${venue} - ${city}, ${state}`;
+	else if (venue && city) venueBits = `${venue} - ${city}`;
+	else if (venue && state) venueBits = `${venue} - ${state}`;
+	else if (city && state) venueBits = `${city}, ${state}`;
+	else venueBits = venue || city || state || "";
     const venueEl = document.createElement("div");
     venueEl.textContent = venueBits;
     venueEl.style.fontSize = "12px";
