@@ -1,13 +1,26 @@
 // ================== CONFIG ==================
-const API_BASE = "https://wrestling-archive.onrender.com/";
+const API_BASE = "https://wrestling-archive.onrender.com";
+const SHOWS_ENDPOINT = `${API_BASE}/sheet/shows`;
+
+// ================== STATE ==================
+let SHOWS = [];
+let YEARS = [];
 
 // ================== DOM REFS ==================
 const headerEl = document.querySelector("header");
 
 // ================== INIT ==================
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   initHeader();
-  buildShowsHeaderUI();
+  buildShowsHeaderSkeleton(); // creates crumbs + empty year row
+
+  // Load shows CSV → build year bubbles from real data
+  SHOWS = await loadShowsFromCsv();
+  YEARS = extractYearsFromShows(SHOWS);
+
+  // Only show 2021–2025 (your request), in descending order
+  const filtered = YEARS.filter((y) => y >= 2021 && y <= 2025).sort((a, b) => b - a);
+  renderYearBubbles(filtered);
 });
 
 // ================== HEADER ONLY ==================
@@ -67,10 +80,10 @@ function setCrumbs(text) {
   crumbs.style.marginTop = "6px";
 }
 
-// ================== SHOWS HEADER UI (YEARS ONLY) ==================
-function buildShowsHeaderUI() {
+// Create the “Select a year…” line + a container where year bubbles will go
+function buildShowsHeaderSkeleton() {
   clearResultsHead();
-  setCrumbs("NOTE: This is a work in progress and by no means complete - keep checking back for more details.");
+  setCrumbs("Select a year from the list.");
 
   const head = getResultsHead();
   if (!head) return;
@@ -78,9 +91,124 @@ function buildShowsHeaderUI() {
   const yearRow = document.createElement("div");
   yearRow.id = "year-groups";
   yearRow.className = "letter-groups";
+  head.appendChild(yearRow);
+}
 
-  // Years requested
-  const years = [2025, 2024, 2023, 2022, 2021];
+// ================== CSV PARSER (music-style) ==================
+function parseCsvLine(line) {
+  const out = [];
+  let cur = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur.trim());
+  return out;
+}
+
+// ================== LOAD SHOWS FROM CSV ==================
+async function loadShowsFromCsv() {
+  try {
+    const res = await fetch(SHOWS_ENDPOINT);
+    const text = await res.text();
+    if (!text.trim()) return [];
+
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    const headerLine = lines.shift();
+    const header = parseCsvLine(headerLine);
+    const headerLower = header.map((h) => h.trim().toLowerCase());
+
+    // Try to find date column like music version does
+    const dateIdx =
+      headerLower.indexOf("show_date") !== -1
+        ? headerLower.indexOf("show_date")
+        : headerLower.indexOf("date");
+
+    const rows = [];
+
+    lines.forEach((line) => {
+      const cols = parseCsvLine(line);
+
+      // Keep the whole row as key/value, but we only NEED date right now
+      const row = {};
+      header.forEach((colName, i) => {
+        row[colName.trim().toLowerCase()] = (cols[i] || "").trim();
+      });
+
+      // Normalize a common "date" field
+      row.date =
+        dateIdx !== -1 ? (cols[dateIdx] || "").trim() : (row.show_date || row.date || "");
+
+      rows.push(row);
+    });
+
+    return rows;
+  } catch (err) {
+    console.error("Error loading shows CSV:", err);
+    setCrumbs("Error loading shows data.");
+    return [];
+  }
+}
+
+// ================== YEARS FROM SHOWS ==================
+function yearFromDateString(raw) {
+  // Expect "MM/DD/YY" or "MM/DD/YYYY" (same as music script assumptions)
+  if (!raw) return null;
+  const parts = raw.split("/");
+  if (parts.length !== 3) return null;
+
+  let y = (parts[2] || "").trim();
+  if (!y) return null;
+
+  // "25" -> 2025
+  if (y.length === 2) y = "20" + y;
+
+  const yr = Number(y);
+  return Number.isFinite(yr) ? yr : null;
+}
+
+function extractYearsFromShows(shows) {
+  const set = new Set();
+  (shows || []).forEach((s) => {
+    const yr = yearFromDateString(s.date || s.show_date || "");
+    if (yr) set.add(yr);
+  });
+  return Array.from(set);
+}
+
+// ================== RENDER YEAR BUBBLES ==================
+function renderYearBubbles(years) {
+  const row = document.getElementById("year-groups");
+  if (!row) return;
+
+  row.innerHTML = "";
+
+  // If nothing found, keep UI but show message
+  if (!years || years.length === 0) {
+    const msg = document.createElement("div");
+    msg.textContent = "No years found in the shows sheet.";
+    msg.style.opacity = "0.7";
+    msg.style.fontSize = "13px";
+    msg.style.textAlign = "center";
+    msg.style.width = "100%";
+    row.appendChild(msg);
+    return;
+  }
 
   years.forEach((year) => {
     const btn = document.createElement("button");
@@ -88,15 +216,14 @@ function buildShowsHeaderUI() {
     btn.textContent = String(year);
 
     btn.addEventListener("click", () => {
-      // toggle active state
-      yearRow
-        .querySelectorAll(".letter-pill")
-        .forEach((b) => b.classList.remove("active"));
+      row.querySelectorAll(".letter-pill").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
+
+      // placeholder for next step (show list/posters)
+      setCrumbs(`Year selected: ${year}`);
+      // next: buildShowsForYear(year)
     });
 
-    yearRow.appendChild(btn);
+    row.appendChild(btn);
   });
-
-  head.appendChild(yearRow);
 }
