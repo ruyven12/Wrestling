@@ -356,9 +356,10 @@ function renderShowsCards(rows) {
     venueEl.style.fontSize = "12px";
     venueEl.style.color = "rgba(148,163,184,0.95)";
 
-    right.appendChild(titleEl);
-    if (rawDate) right.appendChild(dateEl);
-    if (venueBits) right.appendChild(venueEl);
+    if (companyText) right.appendChild(companyEl);
+	right.appendChild(titleEl);
+	if (rawDate) right.appendChild(dateEl);
+	if (venueBits) right.appendChild(venueEl);
 
     card.appendChild(posterBox);
     card.appendChild(right);
