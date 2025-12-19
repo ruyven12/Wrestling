@@ -8,6 +8,7 @@ const wrapEl = document.querySelector(".wrap");
 // ================== INIT ==================
 document.addEventListener("DOMContentLoaded", () => {
   initHeader();
+  initInstructionLine(); // ✅ new
 });
 
 // ================== HEADER ONLY (CURRENT PHASE) ==================
@@ -41,4 +42,23 @@ function initHeader() {
 
   headerEl.appendChild(title);
   headerEl.appendChild(credit);
+}
+
+// ================== INSTRUCTION LINE (UNDER HEADER) ==================
+function initInstructionLine() {
+  const head = document.querySelector(".results-head");
+  if (!head) return;
+
+  // Clear anything already in there (safe because it's empty right now)
+  head.innerHTML = "";
+
+  const line = document.createElement("div");
+  line.id = "crumbs"; // matches the ID used in the music version layout
+  line.textContent = "Select a band from the list.";
+  line.style.fontSize = "12px";
+  line.style.opacity = "0.85";
+  line.style.textAlign = "center";
+  line.style.marginTop = "6px";
+
+  head.appendChild(line);
 }
