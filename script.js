@@ -410,8 +410,8 @@ function renderShowsCards(rows) {
         head.textContent = [type, name].filter(Boolean).join(" — ");
 
         const body = document.createElement("div");
-        body.style.fontSize = "12px";
-        body.style.color = "rgba(203,213,225,0.85)";
+        body.style.fontSize = "14px";
+        body.style.color = "rgba(255,255,255,0.85)";
         body.style.whiteSpace = "pre-wrap";
         body.textContent = desc || "";
 
