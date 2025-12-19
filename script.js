@@ -330,13 +330,13 @@ function renderShowsCards(rows) {
 
 	const companyEl = document.createElement("div");
 	companyEl.textContent = companyText;
-	companyEl.style.fontSize = "12px";
+	companyEl.style.fontSize = "13px";
 	companyEl.style.fontWeight = "600";
-	companyEl.style.color = "rgba(148,163,184,0.95)";
+	companyEl.style.color = "rgba(200,0,0,0.95)";
 
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
-    titleEl.style.fontSize = "15px";
+    titleEl.style.fontSize = "18px";
     titleEl.style.fontWeight = "700";
     titleEl.style.color = "#e5e7eb";
 
