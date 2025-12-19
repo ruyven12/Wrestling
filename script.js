@@ -322,6 +322,17 @@ function renderShowsCards(rows) {
     right.style.display = "flex";
     right.style.flexDirection = "column";
     right.style.gap = "6px";
+	
+	const company = (r.company || "").trim();
+
+	let companyText = "";
+	if (company) companyText = company;
+
+	const companyEl = document.createElement("div");
+	companyEl.textContent = companyText;
+	companyEl.style.fontSize = "12px";
+	companyEl.style.fontWeight = "600";
+	companyEl.style.color = "rgba(148,163,184,0.95)";
 
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
