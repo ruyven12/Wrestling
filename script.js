@@ -322,17 +322,17 @@ function renderShowsCards(rows) {
     right.style.display = "flex";
     right.style.flexDirection = "column";
     right.style.gap = "6px";
-	
-	const company = (r.company || "").trim();
 
-	let companyText = "";
-	if (company) companyText = company;
+    const company = (r.company || "").trim();
 
-	const companyEl = document.createElement("div");
-	companyEl.textContent = companyText;
-	companyEl.style.fontSize = "13px";
-	companyEl.style.fontWeight = "600";
-	companyEl.style.color = "rgba(200,0,0,0.95)";
+    let companyText = "";
+    if (company) companyText = company;
+
+    const companyEl = document.createElement("div");
+    companyEl.textContent = companyText;
+    companyEl.style.fontSize = "13px";
+    companyEl.style.fontWeight = "600";
+    companyEl.style.color = "rgba(200,0,0,0.95)";
 
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
@@ -341,129 +341,127 @@ function renderShowsCards(rows) {
     titleEl.style.color = "#e5e7eb";
 
     const dateEl = document.createElement("div");
-	dateEl.textContent = formatPrettyDate(rawDate);
-	dateEl.style.fontSize = "12px";
-	dateEl.style.color = "rgb(203,213,225,0.85)";
+    dateEl.textContent = formatPrettyDate(rawDate);
+    dateEl.style.fontSize = "12px";
+    dateEl.style.color = "rgb(203,213,225,0.85)";
 
     let venueBits = "";
-	if (venue && city && state) venueBits = `${venue} - ${city}, ${state}`;
-	else if (venue && city) venueBits = `${venue} - ${city}`;
-	else if (venue && state) venueBits = `${venue} - ${state}`;
-	else if (city && state) venueBits = `${city}, ${state}`;
-	else venueBits = venue || city || state || "";
+    if (venue && city && state) venueBits = `${venue} - ${city}, ${state}`;
+    else if (venue && city) venueBits = `${venue} - ${city}`;
+    else if (venue && state) venueBits = `${venue} - ${state}`;
+    else if (city && state) venueBits = `${city}, ${state}`;
+    else venueBits = venue || city || state || "";
+
     const venueEl = document.createElement("div");
     venueEl.textContent = venueBits;
     venueEl.style.fontSize = "12px";
     venueEl.style.color = "rgba(148,163,184,0.95)";
 
     if (companyText) right.appendChild(companyEl);
-	right.appendChild(titleEl);
-	if (rawDate) right.appendChild(dateEl);
-	if (venueBits) right.appendChild(venueEl);
+    right.appendChild(titleEl);
+    if (rawDate) right.appendChild(dateEl);
+    if (venueBits) right.appendChild(venueEl);
 
+    // ================== DETAILS DROPDOWN (parts) ==================
+    const details = document.createElement("div");
+
+    // details spans full width under poster+text
+    details.style.gridColumn = "1 / -1";
+    details.style.maxHeight = "0px";
+    details.style.overflow = "hidden";
+    details.style.transition = "max-height 0.3s ease";
+    details.style.padding = "0 4px 0 4px";
+    details.style.marginTop = "6px";
+    details.style.borderTop = "1px solid rgba(255,255,255,0.08)";
+
+    // helper: build the parts content from part_1_* ... part_10_*
+    function buildPartsWrap(row) {
+      const wrap = document.createElement("div");
+      wrap.style.display = "grid";
+      wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+      wrap.style.gap = "10px";
+      wrap.style.padding = "10px 0";
+
+      let any = false;
+
+      for (let i = 1; i <= 10; i++) {
+        const type = (row[`part_${i}_type`] || "").trim();
+        const desc = (row[`part_${i}_desc`] || "").trim();
+
+        // optional fields if you ever add them
+        const name = (row[`part_${i}_name`] || row[`part_${i}_title`] || "").trim();
+
+        if (!type && !name && !desc) continue;
+        any = true;
+
+        const box = document.createElement("div");
+        box.style.background = "rgba(15,23,42,0.18)";
+        box.style.border = "1px solid rgba(148,163,184,0.12)";
+        box.style.borderRadius = "14px";
+        box.style.padding = "10px";
+
+        const head = document.createElement("div");
+        head.style.fontWeight = "800";
+        head.style.fontSize = "13px";
+        head.style.color = "#e5e7eb";
+        head.style.marginBottom = "6px";
+
+        // heading text: "TYPE — NAME" (only include what exists)
+        head.textContent = [type, name].filter(Boolean).join(" — ");
+
+        const body = document.createElement("div");
+        body.style.fontSize = "12px";
+        body.style.color = "rgba(203,213,225,0.85)";
+        body.style.whiteSpace = "pre-wrap";
+        body.textContent = desc || "";
+
+        box.appendChild(head);
+        if (desc) box.appendChild(body);
+
+        wrap.appendChild(box);
+      }
+
+      if (!any) {
+        const none = document.createElement("div");
+        none.textContent = "No match info yet.";
+        none.style.color = "rgba(255,255,255,0.6)";
+        none.style.fontSize = "12px";
+        wrap.appendChild(none);
+      }
+
+      return wrap;
+    }
+
+    // Toggle dropdown when clicking the poster (same idea as scriptMusic)
+    posterBox.style.cursor = "pointer";
+
+    posterBox.addEventListener("click", () => {
+      const isOpen = details.classList.contains("open");
+
+      // close
+      if (isOpen) {
+        details.classList.remove("open");
+        details.style.maxHeight = "0px";
+        return;
+      }
+
+      // open: rebuild content each time (so it stays current with the row)
+      details.classList.add("open");
+      details.innerHTML = "";
+      const wrap = buildPartsWrap(r);
+      details.appendChild(wrap);
+
+      // expand smoothly to content height (music logic)
+      requestAnimationFrame(() => {
+        const full = wrap.offsetHeight + 32;
+        details.style.maxHeight = full + "px";
+      });
+    });
+
+    // ✅ Append in the correct order
     card.appendChild(posterBox);
     card.appendChild(right);
-	card.appendChild(details);
-	resultsEl.appendChild(card);
-	
-	// ================== DETAILS DROPDOWN (parts) ==================
-const details = document.createElement("div");
-
-// details spans full width under poster+text
-details.style.gridColumn = "1 / -1";
-details.style.maxHeight = "0px";
-details.style.overflow = "hidden";
-details.style.transition = "max-height 0.3s ease";
-details.style.padding = "0 4px 0 4px";
-details.style.marginTop = "6px";
-details.style.borderTop = "1px solid rgba(255,255,255,0.08)";
-
-// helper: build the parts content from part_1_* ... part_10_*
-function buildPartsWrap(row) {
-  const wrap = document.createElement("div");
-  wrap.style.display = "grid";
-  wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
-  wrap.style.gap = "10px";
-  wrap.style.padding = "10px 0";
-
-  let any = false;
-
-  for (let i = 1; i <= 10; i++) {
-    const type = (row[`part_${i}_type`] || "").trim();
-    const desc = (row[`part_${i}_desc`] || "").trim();
-
-    // if your sheet also has name/title fields, these will auto-pick them up if present
-    const name =
-      (row[`part_${i}_name`] || row[`part_${i}_title`] || "").trim();
-
-    if (!type && !name && !desc) continue;
-    any = true;
-
-    const box = document.createElement("div");
-    box.style.background = "rgba(15,23,42,0.18)";
-    box.style.border = "1px solid rgba(148,163,184,0.12)";
-    box.style.borderRadius = "14px";
-    box.style.padding = "10px";
-
-    const head = document.createElement("div");
-    head.style.fontWeight = "800";
-    head.style.fontSize = "13px";
-    head.style.color = "#e5e7eb";
-    head.style.marginBottom = "6px";
-
-    // heading text: "TYPE — NAME" (only include what exists)
-    head.textContent = [type, name].filter(Boolean).join(" — ");
-
-    const body = document.createElement("div");
-    body.style.fontSize = "12px";
-    body.style.color = "rgba(203,213,225,0.85)";
-    body.style.whiteSpace = "pre-wrap";
-    body.textContent = desc || "";
-
-    box.appendChild(head);
-    if (desc) box.appendChild(body);
-
-    wrap.appendChild(box);
-  }
-
-  if (!any) {
-    const none = document.createElement("div");
-    none.textContent = "No match info yet.";
-    none.style.color = "rgba(255,255,255,0.6)";
-    none.style.fontSize = "12px";
-    wrap.appendChild(none);
-  }
-
-  return wrap;
-}
-
-// Toggle dropdown when clicking the poster (same idea as scriptMusic)
-posterBox.style.cursor = "pointer";
-
-posterBox.addEventListener("click", () => {
-  const isOpen = details.classList.contains("open");
-
-  // close
-  if (isOpen) {
-    details.classList.remove("open");
-    details.style.maxHeight = "0px";
-    return;
-  }
-
-  // open: rebuild content each time (so it stays current with the row)
-  details.classList.add("open");
-  details.innerHTML = "";
-  const wrap = buildPartsWrap(r);
-  details.appendChild(wrap);
-
-  // expand smoothly to content height (music logic)
-  requestAnimationFrame(() => {
-    const full = wrap.offsetHeight + 32;
-    details.style.maxHeight = full + "px";
-  });
-});
-
-
+    card.appendChild(details); // <-- YOU WERE MISSING THIS
     resultsEl.appendChild(card);
   });
 }
