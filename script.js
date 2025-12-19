@@ -70,7 +70,7 @@ function setCrumbs(text) {
 // ================== SHOWS HEADER UI (YEARS ONLY) ==================
 function buildShowsHeaderUI() {
   clearResultsHead();
-  setCrumbs("Select a year from the list.");
+  setCrumbs("NOTE: This is a work in progress and by no means complete - keep checking back for more details.");
 
   const head = getResultsHead();
   if (!head) return;
@@ -93,10 +93,6 @@ function buildShowsHeaderUI() {
         .querySelectorAll(".letter-pill")
         .forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
-
-      // placeholder behavior for now
-      setCrumbs(`Year selected: ${year}`);
-      // later: buildShowsForYear(year)
     });
 
     yearRow.appendChild(btn);
