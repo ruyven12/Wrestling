@@ -209,7 +209,7 @@ function clearResults() {
   resultsEl.style.display = "block";
 }
 
-function renderShowsTable(rows) {
+function renderShowsCards(rows) {
   clearResults();
   if (!resultsEl) return;
 
@@ -223,81 +223,99 @@ function renderShowsTable(rows) {
     return;
   }
 
-  // Columns (matching your screenshot style)
-  const cols = [
-    "company_1",
-    "company_2",
-    "show_name",
-    "show_poster",
-    "show_date",
-    "show_city",
-    "show_state",
-    "show_venue",
-  ];
-
-  const wrap = document.createElement("div");
-  wrap.style.width = "100%";
-  wrap.style.overflowX = "auto";
-
-  const table = document.createElement("table");
-  table.style.width = "100%";
-  table.style.borderCollapse = "collapse";
-  table.style.fontSize = "12px";
-  table.style.minWidth = "900px";
-
-  const thead = document.createElement("thead");
-  const trh = document.createElement("tr");
-
-  cols.forEach((c) => {
-    const th = document.createElement("th");
-    th.textContent = c;
-    th.style.textAlign = "left";
-    th.style.padding = "8px 10px";
-    th.style.borderBottom = "1px solid rgba(255,255,255,0.12)";
-    th.style.opacity = "0.9";
-    trh.appendChild(th);
-  });
-
-  thead.appendChild(trh);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
+  // Switch results area to a card grid (Music-like)
+  resultsEl.style.display = "grid";
+  resultsEl.style.gridTemplateColumns = "repeat(auto-fit, minmax(420px, 1fr))";
+  resultsEl.style.gap = "16px";
+  resultsEl.style.width = "100%";
+  resultsEl.style.maxWidth = "1200px";
+  resultsEl.style.margin = "0 auto";
 
   rows.forEach((r) => {
-    const tr = document.createElement("tr");
+    const title = (r.show_name || r.title || "").trim();
+    const rawDate = (r.show_date || r.date || "").trim();
+    const city = (r.show_city || r.city || "").trim();
+    const state = (r.show_state || r.state || "").trim();
+    const venue = (r.show_venue || r.venue || "").trim();
+    const posterUrl = (r.show_poster || r.poster_url || "").trim();
 
-    cols.forEach((c) => {
-      const td = document.createElement("td");
-      td.style.padding = "8px 10px";
-      td.style.borderBottom = "1px solid rgba(255,255,255,0.06)";
-      td.style.verticalAlign = "top";
+    // Card shell
+    const card = document.createElement("article");
+    card.style.display = "grid";
+    card.style.gridTemplateColumns = "120px 1fr";
+    card.style.gap = "14px";
+    card.style.alignItems = "center";
+    card.style.padding = "12px 14px";
+    card.style.borderRadius = "12px";
+    card.style.background = "rgba(15, 23, 42, 0.25)";
+    card.style.border = "1px solid rgba(255,255,255,0.08)";
+    card.style.boxShadow = "0 10px 25px rgba(0,0,0,0.25)";
 
-      const val = (r[c] || "").trim();
+    // Poster box (left)
+    const posterBox = document.createElement("div");
+    posterBox.style.width = "110px";
+    posterBox.style.height = "110px";
+    posterBox.style.borderRadius = "10px";
+    posterBox.style.overflow = "hidden";
+    posterBox.style.background = "rgba(0,0,0,0.35)";
+    posterBox.style.border = "1px solid rgba(255,255,255,0.10)";
+    posterBox.style.display = "flex";
+    posterBox.style.alignItems = "center";
+    posterBox.style.justifyContent = "center";
 
-      // Make poster a clickable link if present
-      if (c === "show_poster" && val) {
-        const a = document.createElement("a");
-        a.href = val;
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.textContent = "poster";
-        a.style.color = "#8be9fd";
-        a.style.textDecoration = "none";
-        td.appendChild(a);
-      } else {
-        td.textContent = val;
-      }
+    if (posterUrl) {
+      const img = document.createElement("img");
 
-      tr.appendChild(td);
-    });
+      // If it’s a SmugMug/remote URL, route through your proxy endpoint
+      img.src = `${API_BASE}/show-poster?url=${encodeURIComponent(posterUrl)}`;
 
-    tbody.appendChild(tr);
+      img.alt = title || "poster";
+      img.style.width = "100%";
+      img.style.height = "100%";
+      img.style.objectFit = "cover";
+      posterBox.appendChild(img);
+    } else {
+      const empty = document.createElement("div");
+      empty.textContent = "No poster";
+      empty.style.color = "rgba(248,250,252,0.6)";
+      empty.style.fontSize = "12px";
+      posterBox.appendChild(empty);
+    }
+
+    // Right side text
+    const right = document.createElement("div");
+    right.style.display = "flex";
+    right.style.flexDirection = "column";
+    right.style.gap = "6px";
+
+    const titleEl = document.createElement("div");
+    titleEl.textContent = title || "(Untitled show)";
+    titleEl.style.fontSize = "15px";
+    titleEl.style.fontWeight = "700";
+    titleEl.style.color = "#e5e7eb";
+
+    const dateEl = document.createElement("div");
+    dateEl.textContent = rawDate || "";
+    dateEl.style.fontSize = "12px";
+    dateEl.style.color = "rgba(203,213,225,0.85)";
+
+    const venueBits = [venue, city, state].filter(Boolean).join(" • ");
+    const venueEl = document.createElement("div");
+    venueEl.textContent = venueBits;
+    venueEl.style.fontSize = "12px";
+    venueEl.style.color = "rgba(148,163,184,0.95)";
+
+    right.appendChild(titleEl);
+    if (rawDate) right.appendChild(dateEl);
+    if (venueBits) right.appendChild(venueEl);
+
+    card.appendChild(posterBox);
+    card.appendChild(right);
+
+    resultsEl.appendChild(card);
   });
-
-  table.appendChild(tbody);
-  wrap.appendChild(table);
-  resultsEl.appendChild(wrap);
 }
+
 
 
 // ================== RENDER YEAR BUBBLES ==================
@@ -331,7 +349,7 @@ function renderYearBubbles(years) {
   // Update the instruction line + show the data below
   setCrumbs(`Shows for ${year}`);
   const rows = getShowsForYear(year);
-  renderShowsTable(rows);
+  renderShowsCards(rows);
 });
 
 
