@@ -3,7 +3,6 @@ const API_BASE = "https://wrestling-archive.onrender.com/";
 
 // ================== DOM REFS ==================
 const headerEl = document.querySelector("header");
-const titleEl = document.getElementById("page-title");
 const wrapEl = document.querySelector(".wrap");
 
 // ================== INIT ==================
@@ -11,34 +10,34 @@ document.addEventListener("DOMContentLoaded", () => {
   initHeader();
 });
 
-// ================== HEADER / TITLE ONLY ==================
+// ================== HEADER ONLY (CURRENT PHASE) ==================
 function initHeader() {
-  // Defensive: header might not exist yet
+  // Defensive guard
   if (!headerEl) return;
 
-  // Clear anything injected by the Music version
+  // Clear anything static or leftover
   headerEl.innerHTML = "";
 
-  // Build title
-  const title = document.createElement("div");
-  title.textContent = "The Wrestling Archives";
-  title.style.fontSize = "20px";
-  title.style.fontWeight = "600";
-  title.style.letterSpacing = "0.04em";
-  title.style.color = "#e2e8f0";
-
-  // Optional right-side credit
-  const credit = document.createElement("div");
-  credit.textContent = "Voodoo Media";
-  credit.style.fontSize = "12px";
-  credit.style.opacity = "0.65";
-  credit.style.marginLeft = "auto";
-
-  // Header layout
+  // Header layout (matches screenshot)
   headerEl.style.display = "flex";
   headerEl.style.alignItems = "center";
-  headerEl.style.gap = "14px";
+  headerEl.style.justifyContent = "space-between";
   headerEl.style.padding = "12px 20px";
+  headerEl.style.width = "100%";
+
+  // Left: Title
+  const title = document.createElement("div");
+  title.textContent = "The Wrestling Archives";
+  title.style.fontSize = "14px";
+  title.style.fontWeight = "700";
+  title.style.color = "#ffffff";
+
+  // Right: Credit
+  const credit = document.createElement("div");
+  credit.textContent = "Voodoo Media";
+  credit.style.fontSize = "11px";
+  credit.style.opacity = "0.7";
+  credit.style.color = "#ffffff";
 
   headerEl.appendChild(title);
   headerEl.appendChild(credit);
