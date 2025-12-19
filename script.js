@@ -8,6 +8,7 @@ let YEARS = [];
 
 // ================== DOM REFS ==================
 const headerEl = document.querySelector("header");
+const resultsEl = document.getElementById("results");
 
 // ================== INIT ==================
 document.addEventListener("DOMContentLoaded", async () => {
@@ -83,7 +84,7 @@ function setCrumbs(text) {
 // Create the “Select a year…” line + a container where year bubbles will go
 function buildShowsHeaderSkeleton() {
   clearResultsHead();
-  setCrumbs("Select a year from the list.");
+  setCrumbs("NOTE: This is a work in progress - bear with me as it gets coded.");
 
   const head = getResultsHead();
   if (!head) return;
@@ -191,6 +192,114 @@ function extractYearsFromShows(shows) {
   return Array.from(set);
 }
 
+// ================== RESULTS RENDERING ==================
+function getShowsForYear(year) {
+  const yr = Number(year);
+  return (SHOWS || []).filter((row) => {
+    const raw = (row.show_date || row.date || "").trim();
+    const y = yearFromDateString(raw);
+    return y === yr;
+  });
+}
+
+function clearResults() {
+  if (!resultsEl) return;
+  resultsEl.innerHTML = "";
+  // When showing a table, don't force the card grid layout
+  resultsEl.style.display = "block";
+}
+
+function renderShowsTable(rows) {
+  clearResults();
+  if (!resultsEl) return;
+
+  if (!rows || rows.length === 0) {
+    const msg = document.createElement("div");
+    msg.textContent = "No shows found for this year.";
+    msg.style.opacity = "0.8";
+    msg.style.textAlign = "center";
+    msg.style.padding = "18px";
+    resultsEl.appendChild(msg);
+    return;
+  }
+
+  // Columns (matching your screenshot style)
+  const cols = [
+    "company_1",
+    "company_2",
+    "show_name",
+    "show_poster",
+    "show_date",
+    "show_city",
+    "show_state",
+    "show_venue",
+  ];
+
+  const wrap = document.createElement("div");
+  wrap.style.width = "100%";
+  wrap.style.overflowX = "auto";
+
+  const table = document.createElement("table");
+  table.style.width = "100%";
+  table.style.borderCollapse = "collapse";
+  table.style.fontSize = "12px";
+  table.style.minWidth = "900px";
+
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+
+  cols.forEach((c) => {
+    const th = document.createElement("th");
+    th.textContent = c;
+    th.style.textAlign = "left";
+    th.style.padding = "8px 10px";
+    th.style.borderBottom = "1px solid rgba(255,255,255,0.12)";
+    th.style.opacity = "0.9";
+    trh.appendChild(th);
+  });
+
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+
+  rows.forEach((r) => {
+    const tr = document.createElement("tr");
+
+    cols.forEach((c) => {
+      const td = document.createElement("td");
+      td.style.padding = "8px 10px";
+      td.style.borderBottom = "1px solid rgba(255,255,255,0.06)";
+      td.style.verticalAlign = "top";
+
+      const val = (r[c] || "").trim();
+
+      // Make poster a clickable link if present
+      if (c === "show_poster" && val) {
+        const a = document.createElement("a");
+        a.href = val;
+        a.target = "_blank";
+        a.rel = "noopener";
+        a.textContent = "poster";
+        a.style.color = "#8be9fd";
+        a.style.textDecoration = "none";
+        td.appendChild(a);
+      } else {
+        td.textContent = val;
+      }
+
+      tr.appendChild(td);
+    });
+
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  resultsEl.appendChild(wrap);
+}
+
+
 // ================== RENDER YEAR BUBBLES ==================
 function renderYearBubbles(years) {
   const row = document.getElementById("year-groups");
@@ -216,13 +325,15 @@ function renderYearBubbles(years) {
     btn.textContent = String(year);
 
     btn.addEventListener("click", () => {
-      row.querySelectorAll(".letter-pill").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
+  row.querySelectorAll(".letter-pill").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
 
-      // placeholder for next step (show list/posters)
-      setCrumbs(`Year selected: ${year}`);
-      // next: buildShowsForYear(year)
-    });
+  // Update the instruction line + show the data below
+  setCrumbs(`Shows for ${year}`);
+  const rows = getShowsForYear(year);
+  renderShowsTable(rows);
+});
+
 
     row.appendChild(btn);
   });
