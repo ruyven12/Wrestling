@@ -3,37 +3,31 @@ const API_BASE = "https://wrestling-archive.onrender.com/";
 
 // ================== DOM REFS ==================
 const headerEl = document.querySelector("header");
-const wrapEl = document.querySelector(".wrap");
 
 // ================== INIT ==================
 document.addEventListener("DOMContentLoaded", () => {
   initHeader();
-  initInstructionLine(); // ✅ new
+  buildShowsHeaderUI();
 });
 
-// ================== HEADER ONLY (CURRENT PHASE) ==================
+// ================== HEADER ONLY ==================
 function initHeader() {
-  // Defensive guard
   if (!headerEl) return;
 
-  // Clear anything static or leftover
   headerEl.innerHTML = "";
 
-  // Header layout (matches screenshot)
   headerEl.style.display = "flex";
   headerEl.style.alignItems = "center";
   headerEl.style.justifyContent = "space-between";
   headerEl.style.padding = "12px 20px";
   headerEl.style.width = "100%";
 
-  // Left: Title
   const title = document.createElement("div");
   title.textContent = "The Wrestling Archives";
   title.style.fontSize = "14px";
   title.style.fontWeight = "700";
   title.style.color = "#ffffff";
 
-  // Right: Credit
   const credit = document.createElement("div");
   credit.textContent = "Voodoo Media";
   credit.style.fontSize = "11px";
@@ -44,21 +38,69 @@ function initHeader() {
   headerEl.appendChild(credit);
 }
 
-// ================== INSTRUCTION LINE (UNDER HEADER) ==================
-function initInstructionLine() {
-  const head = document.querySelector(".results-head");
+// ================== RESULTS-HEAD HELPERS ==================
+function getResultsHead() {
+  return document.querySelector(".results-head");
+}
+
+function clearResultsHead() {
+  const head = getResultsHead();
+  if (!head) return;
+  head.innerHTML = "";
+}
+
+function setCrumbs(text) {
+  const head = getResultsHead();
   if (!head) return;
 
-  // Clear anything already in there (safe because it's empty right now)
-  head.innerHTML = "";
+  let crumbs = document.getElementById("crumbs");
+  if (!crumbs) {
+    crumbs = document.createElement("div");
+    crumbs.id = "crumbs";
+    head.appendChild(crumbs);
+  }
 
-  const line = document.createElement("div");
-  line.id = "crumbs"; // matches the ID used in the music version layout
-  line.textContent = "NOTE: This is a work in progress, and some things will be missing for a bit. Bear with me as I get this coded.";
-  line.style.fontSize = "15px";
-  line.style.opacity = "0.85";
-  line.style.textAlign = "center";
-  line.style.marginTop = "6px";
+  crumbs.textContent = text;
+  crumbs.style.fontSize = "15px";
+  crumbs.style.opacity = "0.85";
+  crumbs.style.textAlign = "center";
+  crumbs.style.marginTop = "6px";
+}
 
-  head.appendChild(line);
+// ================== SHOWS HEADER UI (YEARS ONLY) ==================
+function buildShowsHeaderUI() {
+  clearResultsHead();
+  setCrumbs("Select a year from the list.");
+
+  const head = getResultsHead();
+  if (!head) return;
+
+  const yearRow = document.createElement("div");
+  yearRow.id = "year-groups";
+  yearRow.className = "letter-groups";
+
+  // Years requested
+  const years = [2025, 2024, 2023, 2022, 2021];
+
+  years.forEach((year) => {
+    const btn = document.createElement("button");
+    btn.className = "letter-pill";
+    btn.textContent = String(year);
+
+    btn.addEventListener("click", () => {
+      // toggle active state
+      yearRow
+        .querySelectorAll(".letter-pill")
+        .forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+
+      // placeholder behavior for now
+      setCrumbs(`Year selected: ${year}`);
+      // later: buildShowsForYear(year)
+    });
+
+    yearRow.appendChild(btn);
+  });
+
+  head.appendChild(yearRow);
 }
