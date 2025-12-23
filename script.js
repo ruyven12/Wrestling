@@ -362,7 +362,7 @@ function renderShowsCards(rows) {
         box.style.borderRadius = "14px";
 
         const head = document.createElement("div");
-        head.style.fontWeight = "800";
+        head.style.fontWeight = "500";
 
         // Header label: always use stip if present, no type-based logic
         head.textContent = stip ? `${stip} Match` : type;
