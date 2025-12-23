@@ -310,26 +310,23 @@ function renderShowsCards(rows) {
     right.style.flexDirection = "column";
     right.style.gap = "6px";
 
-    // ================== COMPANY (restored) ==================
+    // ================== COMPANY ==================
     const company = (r.company || "").trim();
-    if (company) {
-      const companyEl = document.createElement("div");
-      companyEl.textContent = company;
-      companyEl.style.fontSize = "13px";
-      companyEl.style.fontWeight = "600";
-      companyEl.style.color = "rgba(200,0,0,0.95)";
-      right.appendChild(companyEl);
-    }
+    let companyText = "";
+    if (company) companyText = company;
+
+    const companyEl = document.createElement("div");
+    companyEl.textContent = companyText;
+    companyEl.style.fontSize = "13px";
+    companyEl.style.fontWeight = "600";
+    companyEl.style.color = "rgba(200,0,0,0.95)";
 
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
     titleEl.style.fontSize = "18px";
     titleEl.style.fontWeight = "700";
 
-    const dateEl = document.createElement("div");
-    dateEl.textContent = formatPrettyDate(rawDate);
-    dateEl.style.fontSize = "12px";
-
+    if (companyText) right.appendChild(companyEl);
     right.appendChild(titleEl);
     if (rawDate) right.appendChild(dateEl);
 
