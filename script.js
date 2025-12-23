@@ -129,7 +129,9 @@ async function loadShowsFromCsv() {
     const text = await res.text();
     if (!text.trim()) return [];
 
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    const lines = text.split(/
+?
+/).filter((l) => l.trim());
     const headerLine = lines.shift();
     const header = parseCsvLine(headerLine);
     const headerLower = header.map((h) => h.trim().toLowerCase());
@@ -243,7 +245,6 @@ function formatPrettyDate(raw) {
   return `${monthName} ${day}${suffix}, ${year}`;
 }
 
-
 function renderShowsCards(rows) {
   clearResults();
   if (!resultsEl) return;
@@ -309,6 +310,17 @@ function renderShowsCards(rows) {
     right.style.flexDirection = "column";
     right.style.gap = "6px";
 
+    // ================== COMPANY (restored) ==================
+    const company = (r.company || "").trim();
+    if (company) {
+      const companyEl = document.createElement("div");
+      companyEl.textContent = company;
+      companyEl.style.fontSize = "13px";
+      companyEl.style.fontWeight = "600";
+      companyEl.style.color = "rgba(200,0,0,0.95)";
+      right.appendChild(companyEl);
+    }
+
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
     titleEl.style.fontSize = "18px";
@@ -363,7 +375,8 @@ function renderShowsCards(rows) {
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.textContent = lines.join("\n");
+          body.textContent = lines.join("
+");
           box.appendChild(body);
         }
 
@@ -400,8 +413,6 @@ function renderShowsCards(rows) {
   });
 }
 
-
-
 // ================== RENDER YEAR BUBBLES ==================
 function renderYearBubbles(years) {
   const row = document.getElementById("year-groups");
@@ -427,15 +438,14 @@ function renderYearBubbles(years) {
     btn.textContent = String(year);
 
     btn.addEventListener("click", () => {
-  row.querySelectorAll(".letter-pill").forEach((b) => b.classList.remove("active"));
-  btn.classList.add("active");
+      row.querySelectorAll(".letter-pill").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
 
-  // Update the instruction line + show the data below
-  setCrumbs(`Shows for ${year}`);
-  const rows = getShowsForYear(year);
-  renderShowsCards(rows);
-});
-
+      // Update the instruction line + show the data below
+      setCrumbs(`Shows for ${year}`);
+      const rows = getShowsForYear(year);
+      renderShowsCards(rows);
+    });
 
     row.appendChild(btn);
   });
