@@ -385,8 +385,13 @@ function renderShowsCards(rows) {
       let any = false;
 
       for (let i = 1; i <= 10; i++) {
-        const type = (row[`part_${i}_type`] || "").trim();
-        const desc = (row[`part_${i}_desc`] || "").trim();
+        const type   = (row[`part_${i}_type`] || "").trim();
+		const stip   = (row[`part_${i}_stip`] || "").trim();
+		const title  = (row[`part_${i}_title`] || "").trim();
+		const people = (row[`part_${i}_people`] || "").trim();
+		
+		if (!type && !stip && !title && !people) continue;
+		any = true;
 
         // optional fields if you ever add them
         const name = (row[`part_${i}_name`] || row[`part_${i}_title`] || "").trim();
@@ -401,25 +406,41 @@ function renderShowsCards(rows) {
         box.style.padding = "10px";
 
         const head = document.createElement("div");
-        head.style.fontWeight = "800";
-        head.style.fontSize = "13px";
-        head.style.color = "#e5e7eb";
-        head.style.marginBottom = "6px";
+head.style.fontWeight = "800";
+head.style.fontSize = "13px";
+head.style.color = "#e5e7eb";
+head.style.marginBottom = "6px";
 
-        // heading text: "TYPE — NAME" (only include what exists)
-        head.textContent = [type, name].filter(Boolean).join(" — ");
+let headerText = "";
+
+// RULE 1 (current):
+// Match + stip → "Stip Match"
+if (type === "Match" && stip) {
+  headerText = `${stip} Match`;
+} else {
+  // fallback (future rules go ABOVE this)
+  headerText = [type, stip].filter(Boolean).join(" — ");
+}
+
+head.textContent = headerText;
+box.appendChild(head);
+
 
         const body = document.createElement("div");
-        body.style.fontSize = "14px";
-        body.style.color = "rgba(255,255,255,0.85)";
-        body.style.whiteSpace = "pre-wrap";
-        body.textContent = desc || "";
+body.style.fontSize = "14px";
+body.style.color = "rgba(255,255,255,0.85)";
+body.style.whiteSpace = "pre-wrap";
+body.style.marginTop = "4px";
 
-        box.appendChild(head);
-        if (desc) box.appendChild(body);
+const lines = [];
+if (people) lines.push(people);
+if (title)  lines.push(title);
 
-        wrap.appendChild(box);
-      }
+if (lines.length) {
+  body.textContent = lines.join("\n");
+  box.appendChild(body);
+}
+
 
       if (!any) {
         const none = document.createElement("div");
