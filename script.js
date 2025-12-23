@@ -359,7 +359,9 @@ function renderShowsCards(rows) {
 
         const box = document.createElement("div");
         box.style.padding = "10px";
-        box.style.borderRadius = "14px";
+        box.style.borderRadius = "14px";  
+        box.style.border = "1px solid rgba(255,255,255,0.08)";
+		box.style.background = "rgba(15, 23, 42, 0.18)";
 
         const head = document.createElement("div");
         head.style.fontWeight = "800";
