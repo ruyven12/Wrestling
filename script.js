@@ -129,9 +129,8 @@ async function loadShowsFromCsv() {
     const text = await res.text();
     if (!text.trim()) return [];
 
-    const lines = text.split(/
-?
-/).filter((l) => l.trim());
+    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+
     const headerLine = lines.shift();
     const header = parseCsvLine(headerLine);
     const headerLower = header.map((h) => h.trim().toLowerCase());
@@ -326,6 +325,10 @@ function renderShowsCards(rows) {
     titleEl.style.fontSize = "18px";
     titleEl.style.fontWeight = "700";
 
+    const dateEl = document.createElement("div");
+    dateEl.textContent = formatPrettyDate(rawDate);
+    dateEl.style.fontSize = "12px";
+
     if (companyText) right.appendChild(companyEl);
     right.appendChild(titleEl);
     if (rawDate) right.appendChild(dateEl);
@@ -372,8 +375,7 @@ function renderShowsCards(rows) {
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.textContent = lines.join("
-");
+          body.textContent = lines.join("\n");
           box.appendChild(body);
         }
 
