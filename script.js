@@ -261,11 +261,7 @@ function renderShowsCards(rows) {
   }
 
   resultsEl.style.display = "grid";
-  // Single column on mobile (keeps everything else the same)
-  const isMobile = window.matchMedia("(max-width: 700px)").matches;
-  resultsEl.style.gridTemplateColumns = isMobile
-    ? "1fr"
-    : "repeat(auto-fit, minmax(420px, 1fr))";
+  resultsEl.style.gridTemplateColumns = "repeat(auto-fit, minmax(420px, 1fr))";
   resultsEl.style.gap = "16px";
   resultsEl.style.width = "100%";
   resultsEl.style.maxWidth = "1200px";
