@@ -374,80 +374,111 @@ function renderShowsCards(rows) {
     details.style.marginTop = "6px";
     details.style.borderTop = "1px solid rgba(255,255,255,0.08)";
 
-function buildPartsWrap(row) {
-  const wrap = document.createElement("div");
-  wrap.style.display = "grid";
-  wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
-  wrap.style.gap = "10px";
-  wrap.style.padding = "10px 0";
+    // helper: build the parts content from part_1_* ... part_10_*
+    function buildPartsWrap(row) {
+      const wrap = document.createElement("div");
+      wrap.style.display = "grid";
+      wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+      wrap.style.gap = "10px";
+      wrap.style.padding = "10px 0";
 
-  let any = false;
+      let any = false;
 
-  for (let i = 1; i <= 10; i++) {
-    const type   = (row[`part_${i}_type`] || "").trim();
-    const stip   = (row[`part_${i}_stip`] || "").trim();
-    const title  = (row[`part_${i}_title`] || "").trim();
-    const people = (row[`part_${i}_people`] || "").trim();
+      for (let i = 1; i <= 10; i++) {
+        const type = (row[`part_${i}_type`] || "").trim();
+        const stip = (row[`part_${i}_stip`] || "").trim();
+        const partTitle = (row[`part_${i}_title`] || "").trim();
+        const people = (row[`part_${i}_people`] || "").trim();
 
-    if (!type && !stip && !title && !people) continue;
-    any = true;
+        if (!type && !stip && !partTitle && !people) continue;
+        any = true;
 
-    const box = document.createElement("div");
-    box.style.background = "rgba(15,23,42,0.18)";
-    box.style.border = "1px solid rgba(148,163,184,0.12)";
-    box.style.borderRadius = "14px";
-    box.style.padding = "10px";
+        const box = document.createElement("div");
+        box.style.background = "rgba(15,23,42,0.18)";
+        box.style.border = "1px solid rgba(148,163,184,0.12)";
+        box.style.borderRadius = "14px";
+        box.style.padding = "10px";
 
-    const head = document.createElement("div");
-    head.style.fontWeight = "800";
-    head.style.fontSize = "13px";
-    head.style.color = "#e5e7eb";
-    head.style.marginBottom = "6px";
+        const head = document.createElement("div");
+        head.style.fontWeight = "800";
+        head.style.fontSize = "13px";
+        head.style.color = "#e5e7eb";
+        head.style.marginBottom = "6px";
 
-    let headerText = "";
+        // RULE 1:
+        // Match + stip → "Stip Match"
+        let headerText = "";
+        if (type === "Match" && stip) {
+          headerText = `${stip} Match`;
+        } else {
+          headerText = [type, stip].filter(Boolean).join(" — ");
+        }
 
-    // RULE 1:
-    // Match + stip → "Stip Match"
-    if (type === "Match" && stip) {
-      headerText = `${stip} Match`;
-    } else {
-      headerText = [type, stip].filter(Boolean).join(" — ");
+        head.textContent = headerText;
+        box.appendChild(head);
+
+        const lines = [];
+        if (people) lines.push(people);
+        if (partTitle) lines.push(partTitle);
+
+        if (lines.length) {
+          const body = document.createElement("div");
+          body.style.fontSize = "14px";
+          body.style.color = "rgba(255,255,255,0.85)";
+          body.style.whiteSpace = "pre-wrap";
+          body.style.marginTop = "4px";
+          body.textContent = lines.join("\n");
+          box.appendChild(body);
+        }
+
+        // ✅ IMPORTANT: append the box to wrap
+        wrap.appendChild(box);
+      }
+
+      if (!any) {
+        const none = document.createElement("div");
+        none.textContent = "No match info yet.";
+        none.style.color = "rgba(255,255,255,0.6)";
+        none.style.fontSize = "12px";
+        wrap.appendChild(none);
+      }
+
+      return wrap;
     }
 
-    head.textContent = headerText;
-    box.appendChild(head);
+    // Toggle dropdown when clicking the poster
+    posterBox.style.cursor = "pointer";
 
-    const body = document.createElement("div");
-    body.style.fontSize = "14px";
-    body.style.color = "rgba(255,255,255,0.85)";
-    body.style.whiteSpace = "pre-wrap";
-    body.style.marginTop = "4px";
+    posterBox.addEventListener("click", () => {
+      const isOpen = details.classList.contains("open");
 
-    const lines = [];
-    if (people) lines.push(people);
-    if (title)  lines.push(title);
+      // close
+      if (isOpen) {
+        details.classList.remove("open");
+        details.style.maxHeight = "0px";
+        return;
+      }
 
-    if (lines.length) {
-      body.textContent = lines.join("\n");
-      box.appendChild(body);
-    }
+      // open: rebuild content each time (so it stays current with the row)
+      details.classList.add("open");
+      details.innerHTML = "";
+      const wrap = buildPartsWrap(r);
+      details.appendChild(wrap);
 
-    // ✅ THIS was missing
-    wrap.appendChild(box);
-  }
+      // expand smoothly to content height
+      requestAnimationFrame(() => {
+        const full = wrap.offsetHeight + 32;
+        details.style.maxHeight = full + "px";
+      });
+    });
 
-  // ✅ THIS must be after the loop
-  if (!any) {
-    const none = document.createElement("div");
-    none.textContent = "No match info yet.";
-    none.style.color = "rgba(255,255,255,0.6)";
-    none.style.fontSize = "12px";
-    wrap.appendChild(none);
-  }
-
-  return wrap;
+    // ✅ Append in the correct order
+    card.appendChild(posterBox);
+    card.appendChild(right);
+    card.appendChild(details);
+    resultsEl.appendChild(card);
+  });
 }
-
 
 
 
