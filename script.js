@@ -342,7 +342,7 @@ function renderShowsCards(rows) {
     function buildPartsWrap(row) {
       const wrap = document.createElement("div");
       wrap.style.display = "grid";
-      wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+      wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(160px, 1fr))";
       wrap.style.gap = "10px";
       wrap.style.padding = "10px 0";
 
@@ -362,7 +362,7 @@ function renderShowsCards(rows) {
         box.style.borderRadius = "14px";
 
         const head = document.createElement("div");
-        head.style.fontWeight = "500";
+        head.style.fontWeight = "800";
 
         // Header label: always use stip if present, no type-based logic
         head.textContent = stip ? `${stip} Match` : type;
