@@ -352,9 +352,8 @@ function renderShowsCards(rows) {
         const head = document.createElement("div");
         head.style.fontWeight = "800";
 
-        head.textContent = (type === "Match" && stip)
-          ? `${stip} Match`
-          : [type, stip].filter(Boolean).join(" — ");
+        // Header label: always use stip if present, no type-based logic
+        head.textContent = stip ? `${stip} Match` : type;
 
         box.appendChild(head);
 
