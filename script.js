@@ -129,7 +129,9 @@ async function loadShowsFromCsv() {
     const text = await res.text();
     if (!text.trim()) return [];
 
-    const lines = text.split(/\r?\n/).filter((l) => l.trim());
+    const lines = text.split(/
+?
+/).filter((l) => l.trim());
 
     const headerLine = lines.shift();
     const header = parseCsvLine(headerLine);
@@ -259,7 +261,11 @@ function renderShowsCards(rows) {
   }
 
   resultsEl.style.display = "grid";
-  resultsEl.style.gridTemplateColumns = "repeat(auto-fit, minmax(420px, 1fr))";
+  // Single column on mobile (keeps everything else the same)
+  const isMobile = window.matchMedia("(max-width: 700px)").matches;
+  resultsEl.style.gridTemplateColumns = isMobile
+    ? "1fr"
+    : "repeat(auto-fit, minmax(420px, 1fr))";
   resultsEl.style.gap = "16px";
   resultsEl.style.width = "100%";
   resultsEl.style.maxWidth = "1200px";
@@ -361,7 +367,7 @@ function renderShowsCards(rows) {
         box.style.padding = "10px";
         box.style.borderRadius = "14px";  
         box.style.border = "1px solid rgba(255,255,255,0.08)";
-		box.style.background = "rgba(15, 23, 42, 0.18)";
+        box.style.background = "rgba(15, 23, 42, 0.18)";
 
         const head = document.createElement("div");
         head.style.fontWeight = "800";
@@ -377,7 +383,8 @@ function renderShowsCards(rows) {
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.textContent = lines.join("\n");
+          body.textContent = lines.join("
+");
           box.appendChild(body);
         }
 
