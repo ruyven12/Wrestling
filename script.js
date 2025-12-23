@@ -258,7 +258,6 @@ function renderShowsCards(rows) {
     return;
   }
 
-  // Switch results area to a card grid (Music-like)
   resultsEl.style.display = "grid";
   resultsEl.style.gridTemplateColumns = "repeat(auto-fit, minmax(420px, 1fr))";
   resultsEl.style.gap = "16px";
@@ -274,7 +273,6 @@ function renderShowsCards(rows) {
     const venue = (r.show_venue || r.venue || "").trim();
     const posterUrl = (r.show_poster || r.poster_url || "").trim();
 
-    // Card shell
     const card = document.createElement("article");
     card.style.display = "grid";
     card.style.gridTemplateColumns = "120px 1fr";
@@ -284,9 +282,7 @@ function renderShowsCards(rows) {
     card.style.borderRadius = "12px";
     card.style.background = "rgba(15, 23, 42, 0.25)";
     card.style.border = "1px solid rgba(255,255,255,0.08)";
-    card.style.boxShadow = "0 10px 25px rgba(0,0,0,0.25)";
 
-    // Poster box (left)
     const posterBox = document.createElement("div");
     posterBox.style.width = "110px";
     posterBox.style.height = "110px";
@@ -300,81 +296,37 @@ function renderShowsCards(rows) {
 
     if (posterUrl) {
       const img = document.createElement("img");
-
-      // If it’s a SmugMug/remote URL, route through your proxy endpoint
       img.src = `${API_BASE}/show-poster?url=${encodeURIComponent(posterUrl)}`;
-
       img.alt = title || "poster";
       img.style.width = "100%";
       img.style.height = "100%";
       img.style.objectFit = "cover";
       posterBox.appendChild(img);
-    } else {
-      const empty = document.createElement("div");
-      empty.textContent = "No poster";
-      empty.style.color = "rgba(248,250,252,0.6)";
-      empty.style.fontSize = "12px";
-      posterBox.appendChild(empty);
     }
 
-    // Right side text
     const right = document.createElement("div");
     right.style.display = "flex";
     right.style.flexDirection = "column";
     right.style.gap = "6px";
 
-    const company = (r.company || "").trim();
-
-    let companyText = "";
-    if (company) companyText = company;
-
-    const companyEl = document.createElement("div");
-    companyEl.textContent = companyText;
-    companyEl.style.fontSize = "13px";
-    companyEl.style.fontWeight = "600";
-    companyEl.style.color = "rgba(200,0,0,0.95)";
-
     const titleEl = document.createElement("div");
     titleEl.textContent = title || "(Untitled show)";
     titleEl.style.fontSize = "18px";
     titleEl.style.fontWeight = "700";
-    titleEl.style.color = "#e5e7eb";
 
     const dateEl = document.createElement("div");
     dateEl.textContent = formatPrettyDate(rawDate);
     dateEl.style.fontSize = "12px";
-    dateEl.style.color = "rgb(203,213,225,0.85)";
 
-    let venueBits = "";
-    if (venue && city && state) venueBits = `${venue} - ${city}, ${state}`;
-    else if (venue && city) venueBits = `${venue} - ${city}`;
-    else if (venue && state) venueBits = `${venue} - ${state}`;
-    else if (city && state) venueBits = `${city}, ${state}`;
-    else venueBits = venue || city || state || "";
-
-    const venueEl = document.createElement("div");
-    venueEl.textContent = venueBits;
-    venueEl.style.fontSize = "12px";
-    venueEl.style.color = "rgba(148,163,184,0.95)";
-
-    if (companyText) right.appendChild(companyEl);
     right.appendChild(titleEl);
     if (rawDate) right.appendChild(dateEl);
-    if (venueBits) right.appendChild(venueEl);
 
-    // ================== DETAILS DROPDOWN (parts) ==================
     const details = document.createElement("div");
-
-    // details spans full width under poster+text
     details.style.gridColumn = "1 / -1";
     details.style.maxHeight = "0px";
     details.style.overflow = "hidden";
     details.style.transition = "max-height 0.3s ease";
-    details.style.padding = "0 4px 0 4px";
-    details.style.marginTop = "6px";
-    details.style.borderTop = "1px solid rgba(255,255,255,0.08)";
 
-    // helper: build the parts content from part_1_* ... part_10_*
     function buildPartsWrap(row) {
       const wrap = document.createElement("div");
       wrap.style.display = "grid";
@@ -387,92 +339,60 @@ function renderShowsCards(rows) {
       for (let i = 1; i <= 10; i++) {
         const type = (row[`part_${i}_type`] || "").trim();
         const stip = (row[`part_${i}_stip`] || "").trim();
-        const partTitle = (row[`part_${i}_title`] || "").trim();
+        const title = (row[`part_${i}_title`] || "").trim();
         const people = (row[`part_${i}_people`] || "").trim();
 
-        if (!type && !stip && !partTitle && !people) continue;
+        if (!type && !stip && !title && !people) continue;
         any = true;
 
         const box = document.createElement("div");
-        box.style.background = "rgba(15,23,42,0.18)";
-        box.style.border = "1px solid rgba(148,163,184,0.12)";
-        box.style.borderRadius = "14px";
         box.style.padding = "10px";
+        box.style.borderRadius = "14px";
 
         const head = document.createElement("div");
         head.style.fontWeight = "800";
-        head.style.fontSize = "13px";
-        head.style.color = "#e5e7eb";
-        head.style.marginBottom = "6px";
 
-        // RULE 1:
-        // Match + stip → "Stip Match"
-        let headerText = "";
-        if (type === "Match" && stip) {
-          headerText = `${stip} Match`;
-        } else {
-          headerText = [type, stip].filter(Boolean).join(" — ");
-        }
+        // Header label: always use stip if present, no type-based logic
+        head.textContent = stip ? `${stip} Match` : type;
 
-        head.textContent = headerText;
         box.appendChild(head);
 
         const lines = [];
         if (people) lines.push(people);
-        if (partTitle) lines.push(partTitle);
+        if (title) lines.push(title);
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.style.fontSize = "14px";
-          body.style.color = "rgba(255,255,255,0.85)";
-          body.style.whiteSpace = "pre-wrap";
-          body.style.marginTop = "4px";
           body.textContent = lines.join("\n");
           box.appendChild(body);
         }
 
-        // ✅ IMPORTANT: append the box to wrap
         wrap.appendChild(box);
       }
 
       if (!any) {
         const none = document.createElement("div");
         none.textContent = "No match info yet.";
-        none.style.color = "rgba(255,255,255,0.6)";
-        none.style.fontSize = "12px";
         wrap.appendChild(none);
       }
 
       return wrap;
     }
 
-    // Toggle dropdown when clicking the poster
-    posterBox.style.cursor = "pointer";
-
     posterBox.addEventListener("click", () => {
-      const isOpen = details.classList.contains("open");
-
-      // close
-      if (isOpen) {
-        details.classList.remove("open");
+      const open = details.classList.toggle("open");
+      if (!open) {
         details.style.maxHeight = "0px";
         return;
       }
-
-      // open: rebuild content each time (so it stays current with the row)
-      details.classList.add("open");
       details.innerHTML = "";
       const wrap = buildPartsWrap(r);
       details.appendChild(wrap);
-
-      // expand smoothly to content height
       requestAnimationFrame(() => {
-        const full = wrap.offsetHeight + 32;
-        details.style.maxHeight = full + "px";
+        details.style.maxHeight = wrap.offsetHeight + 32 + "px";
       });
     });
 
-    // ✅ Append in the correct order
     card.appendChild(posterBox);
     card.appendChild(right);
     card.appendChild(details);
