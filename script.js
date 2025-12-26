@@ -386,23 +386,17 @@ function renderShowsCards(rows) {
         // 1) If there's a part title (e.g., "Limitless Championship"), use that as the label
         // 2) Else, if there's a stip (e.g., "Hardcore"), use "<stip> Match"
         // 3) Else fall back to the type (e.g., "Singles Match")
-        // Build full championship-style labels when applicable
+        // Header label priority:
+        // 1) If there's a part title (e.g., "Limitless World"), use "<title> Match"
+        // 2) Else, if there's a stip (e.g., "Hardcore"), use "<stip> Match"
+        // 3) Else fall back to the type (e.g., "Championship Match", "Singles Match")
         let headerLabel = "";
 
-        // If the title already contains "Championship", expand to "<Title> Championship Match"
-        if (title && /championship/i.test(title)) {
-          headerLabel = `${title} Championship Match`;
-        }
-        // If title exists but does NOT include Championship, treat as named match/belt
-        else if (title) {
+        if (title) {
           headerLabel = `${title} Match`;
-        }
-        // Stipulation-based fallback
-        else if (stip) {
+        } else if (stip) {
           headerLabel = `${stip} Match`;
-        }
-        // Final fallback
-        else {
+        } else {
           headerLabel = type;
         }
 
@@ -454,6 +448,7 @@ function renderShowsCards(rows) {
     resultsEl.appendChild(card);
   });
 }
+
 
 // ================== RENDER YEAR BUBBLES ==================
 function renderYearBubbles(years) {
