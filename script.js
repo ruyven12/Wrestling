@@ -309,7 +309,6 @@ function renderShowsCards(rows) {
     right.style.flexDirection = "column";
     right.style.gap = "6px";
 
-    // ================== COMPANY ==================
     const company = (r.company || "").trim();
     let companyText = "";
     if (company) companyText = company;
@@ -341,9 +340,11 @@ function renderShowsCards(rows) {
 
     function buildPartsWrap(row) {
       const wrap = document.createElement("div");
-      wrap.style.display = "grid";
-      wrap.style.gridTemplateColumns = "repeat(auto-fit, minmax(160px, 1fr))";
-      wrap.style.gap = "10px";
+
+      // Single-column stacked list (instead of tile grid)
+      wrap.style.display = "flex";
+      wrap.style.flexDirection = "column";
+      wrap.style.gap = "8px";
       wrap.style.padding = "10px 0";
 
       let any = false;
@@ -358,13 +359,28 @@ function renderShowsCards(rows) {
         any = true;
 
         const box = document.createElement("div");
-        box.style.padding = "10px";
-        box.style.borderRadius = "14px";  
+
+        // Row-style match display
+        box.style.display = "flex";
+        box.style.flexDirection = "column";
+        box.style.padding = "10px 14px";
+        box.style.borderRadius = "10px";
         box.style.border = "1px solid rgba(255,255,255,0.08)";
-        box.style.background = "rgba(15, 23, 42, 0.18)";
+        box.style.background = "rgba(15, 23, 42, 0.22)";
+        box.style.transition = "background 0.15s ease";
+
+        // Optional hover polish
+        box.addEventListener("mouseenter", () => {
+          box.style.background = "rgba(30, 41, 59, 0.35)";
+        });
+        box.addEventListener("mouseleave", () => {
+          box.style.background = "rgba(15, 23, 42, 0.22)";
+        });
 
         const head = document.createElement("div");
         head.style.fontWeight = "800";
+        head.style.fontSize = "14px";
+        head.style.marginBottom = "4px";
 
         // Header label: always use stip if present, no type-based logic
         head.textContent = stip ? `${stip} Match` : type;
@@ -378,6 +394,8 @@ function renderShowsCards(rows) {
         if (lines.length) {
           const body = document.createElement("div");
           body.textContent = lines.join("\n");
+          body.style.fontSize = "13px";
+          body.style.opacity = "0.9";
           box.appendChild(body);
         }
 
