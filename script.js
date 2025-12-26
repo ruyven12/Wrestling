@@ -386,11 +386,25 @@ function renderShowsCards(rows) {
         // 1) If there's a part title (e.g., "Limitless Championship"), use that as the label
         // 2) Else, if there's a stip (e.g., "Hardcore"), use "<stip> Match"
         // 3) Else fall back to the type (e.g., "Singles Match")
-        const headerLabel = title
-          ? `${title} Match`
-          : stip
-          ? `${stip} Match`
-          : type;
+        // Build full championship-style labels when applicable
+        let headerLabel = "";
+
+        // If the title already contains "Championship", expand to "<Title> Championship Match"
+        if (title && /championship/i.test(title)) {
+          headerLabel = `${title} Championship Match`;
+        }
+        // If title exists but does NOT include Championship, treat as named match/belt
+        else if (title) {
+          headerLabel = `${title} Match`;
+        }
+        // Stipulation-based fallback
+        else if (stip) {
+          headerLabel = `${stip} Match`;
+        }
+        // Final fallback
+        else {
+          headerLabel = type;
+        }
 
         head.textContent = headerLabel;
 
