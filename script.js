@@ -410,8 +410,9 @@ function renderShowsCards(rows) {
 
           // Small badge (no emoji dependency)
           const badge = document.createElement("span");
-          badge.textContent = "CHAMPIONSHIP";
-          badge.style.display = "inline-block";
+          badge.style.display = "inline-flex";
+          badge.style.alignItems = "center";
+          badge.style.gap = "6px";
           badge.style.fontSize = "10px";
           badge.style.fontWeight = "900";
           badge.style.letterSpacing = "0.08em";
@@ -422,6 +423,17 @@ function renderShowsCards(rows) {
           badge.style.background = "rgba(250, 204, 21, 0.18)";
           badge.style.border = "1px solid rgba(250, 204, 21, 0.35)";
           badge.style.color = "rgba(250, 204, 21, 0.95)";
+
+          // Title belt icon
+          const icon = document.createElement("span");
+          icon.textContent = "🏆";
+          icon.style.fontSize = "12px";
+
+          const label = document.createElement("span");
+          label.textContent = "CHAMPIONSHIP";
+
+          badge.appendChild(icon);
+          badge.appendChild(label);
           box.appendChild(badge);
 
           // Make the header pop a touch more on title matches
