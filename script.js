@@ -400,6 +400,40 @@ function renderShowsCards(rows) {
           headerLabel = type;
         }
 
+        // Visual flags based on dropdown type (Promo / Match / Championship / Segment)
+        const typeNorm = (type || "").toLowerCase();
+
+        // Championship styling
+        if (typeNorm.includes("championship")) {
+          box.style.border = "1px solid rgba(250, 204, 21, 0.45)";
+          box.style.background = "rgba(250, 204, 21, 0.08)";
+
+          // Small badge (no emoji dependency)
+          const badge = document.createElement("span");
+          badge.textContent = "CHAMPIONSHIP";
+          badge.style.display = "inline-block";
+          badge.style.fontSize = "10px";
+          badge.style.fontWeight = "900";
+          badge.style.letterSpacing = "0.08em";
+          badge.style.padding = "3px 8px";
+          badge.style.borderRadius = "999px";
+          badge.style.marginBottom = "6px";
+          badge.style.width = "fit-content";
+          badge.style.background = "rgba(250, 204, 21, 0.18)";
+          badge.style.border = "1px solid rgba(250, 204, 21, 0.35)";
+          badge.style.color = "rgba(250, 204, 21, 0.95)";
+          box.appendChild(badge);
+
+          // Make the header pop a touch more on title matches
+          head.style.fontWeight = "900";
+        }
+
+        // Promo / Segment subtle styling (optional but helpful)
+        if (typeNorm === "promo" || typeNorm === "segment") {
+          box.style.border = "1px solid rgba(56, 189, 248, 0.22)";
+          box.style.background = "rgba(56, 189, 248, 0.06)";
+        }
+
         head.textContent = headerLabel;
 
         box.appendChild(head);
@@ -448,7 +482,6 @@ function renderShowsCards(rows) {
     resultsEl.appendChild(card);
   });
 }
-
 
 // ================== RENDER YEAR BUBBLES ==================
 function renderYearBubbles(years) {
