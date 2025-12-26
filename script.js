@@ -402,8 +402,7 @@ function renderShowsCards(rows) {
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.textContent = lines.join("
-");
+          body.textContent = lines.join("\n");
           body.style.fontSize = "13px";
           body.style.opacity = "0.9";
           box.appendChild(body);
