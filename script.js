@@ -382,18 +382,28 @@ function renderShowsCards(rows) {
         head.style.fontSize = "14px";
         head.style.marginBottom = "4px";
 
-        // Header label: always use stip if present, no type-based logic
-        head.textContent = stip ? `${stip} Match` : type;
+        // Header label priority:
+        // 1) If there's a part title (e.g., "Limitless Championship"), use that as the label
+        // 2) Else, if there's a stip (e.g., "Hardcore"), use "<stip> Match"
+        // 3) Else fall back to the type (e.g., "Singles Match")
+        const headerLabel = title
+          ? `${title} Match`
+          : stip
+          ? `${stip} Match`
+          : type;
+
+        head.textContent = headerLabel;
 
         box.appendChild(head);
 
         const lines = [];
+        // Keep the body focused on the participants/details.
         if (people) lines.push(people);
-        if (title) lines.push(title);
 
         if (lines.length) {
           const body = document.createElement("div");
-          body.textContent = lines.join("\n");
+          body.textContent = lines.join("
+");
           body.style.fontSize = "13px";
           body.style.opacity = "0.9";
           box.appendChild(body);
