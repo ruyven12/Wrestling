@@ -205,16 +205,20 @@ app.get("/smug/resolve-album", async (req, res) => {
       // Ask SmugMug for image details and expand ImageAlbum (the parent gallery)
       // smug() helper appends "&APIKey=..." so endpoint must include a query string before that.
       const imgData = await smug(
-        `/image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=Image.ImageAlbum`
+        /image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=ImageAlbum
       );
 
       const img = imgData && imgData.Response ? (imgData.Response.Image || imgData.Response.ImageDetail || imgData.Response) : null;
 
       // Try common locations for the ImageAlbum URI
       const albumUri =
-        (img && img.ImageAlbum && img.ImageAlbum.Uri) ||
+        // Most common: Response.Uris.ImageAlbum.Uri
+        (imgData && imgData.Response && imgData.Response.Uris && imgData.Response.Uris.ImageAlbum && imgData.Response.Uris.ImageAlbum.Uri) ||
+        // Sometimes nested on the Image object itself
         (img && img.Uris && img.Uris.ImageAlbum && img.Uris.ImageAlbum.Uri) ||
+        // Sometimes directly expanded
         (imgData && imgData.Response && imgData.Response.ImageAlbum && imgData.Response.ImageAlbum.Uri) ||
+        (img && img.ImageAlbum && img.ImageAlbum.Uri) ||
         "";
 
       const uriStr = String(albumUri || "");
@@ -232,6 +236,17 @@ app.get("/smug/resolve-album", async (req, res) => {
 
       // If we couldn't parse it, still return helpful debug info
       console.log("resolve-album: could not parse AlbumKey from image response", { imageKey, albumUri: uriStr });
+      return res.json({
+        AlbumKey: "",
+        albumKey: "",
+        via: "image",
+        rawUrl,
+        finalUrl,
+        imageKey,
+        albumUri: uriStr,
+        info: "Could not parse AlbumKey from ImageAlbum URI"
+      });
+
     }
   } catch (err) {
     console.log("resolve-album imageKey path failed:", err.message);
