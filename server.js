@@ -89,10 +89,8 @@ app.get("/sheet/bands", async (req, res) => {
 });
 
 app.get("/sheet/shows", async (req, res) => {
-  // CORS already applied by global middleware, but keep explicit for clarity
   allowCors(res);
 
-  // If we have a fresh cache (last 10 minutes), serve it immediately.
   const now = Date.now();
   if (__cache.showsCsv && now - __cache.showsFetchedAt < 10 * 60 * 1000) {
     res.set("X-Cache", "HIT");
@@ -100,12 +98,10 @@ app.get("/sheet/shows", async (req, res) => {
   }
 
   try {
-    // Fast timeout so the edge proxy never returns a 502 without CORS headers
     const out = await fetchTextWithTimeout(SHOWS_SHEET_URL, 8000);
 
     if (!out.ok) {
       console.error("sheet /shows upstream not ok:", out.status);
-      // If we have any cache, serve stale instead of failing hard
       if (__cache.showsCsv) {
         res.set("X-Cache", "STALE");
         return res.type("text/plain").send(__cache.showsCsv);
@@ -115,7 +111,6 @@ app.get("/sheet/shows", async (req, res) => {
 
     __cache.showsCsv = out.text;
     __cache.showsFetchedAt = now;
-
     res.set("X-Cache", "MISS");
     return res.type("text/plain").send(out.text);
   } catch (err) {
@@ -163,6 +158,15 @@ app.get("/show-poster", async (req, res) => {
 // We attempt, in order:
 //  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
 //  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
+
+
+// =========================================================
+// ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
+// =========================================================
+// Frontend calls: /smug/resolve-album?url=<smugmug-url>
+// We attempt, in order:
+//  1) Follow redirects; if final URL is a photo page, extract ImageKey and resolve → AlbumKey using !imagealbum
+//  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
 app.get("/smug/resolve-album", async (req, res) => {
   allowCors(res);
 
@@ -182,18 +186,15 @@ app.get("/smug/resolve-album", async (req, res) => {
     return norm(s).replace(/\s+/g, "-");
   }
 
-  // Try to follow redirects (SmugMug often redirects album-ish URLs to /photos/i-<ImageKey>/...)
   let finalUrl = rawUrl;
   try {
     const r = await fetch(rawUrl, { redirect: "follow" });
     if (r && r.url) finalUrl = r.url;
   } catch (err) {
-    // ignore redirect failures; we'll attempt other resolution methods
     console.log("resolve-album redirect check failed:", err.message);
   }
 
   // If final URL looks like a SmugMug photo URL, extract ImageKey and resolve Image → AlbumKey
-  // Example: https://vmpix.smugmug.com/photos/i-DkRNfbM/0/Match-1  => ImageKey = DkRNfbM
   try {
     const u = new URL(finalUrl);
     const p = String(u.pathname || "");
@@ -202,51 +203,39 @@ app.get("/smug/resolve-album", async (req, res) => {
     if (m && m[1]) {
       const imageKey = m[1];
 
-      // Ask SmugMug for image details and expand ImageAlbum (the parent gallery)
-      // smug() helper appends "&APIKey=..." so endpoint must include a query string before that.
-      const imgData = await smug(
-        /image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=ImageAlbum
+      // Most reliable: use the Image -> ImageAlbum link endpoint (!imagealbum)
+      const albumData = await smug(
+        `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
       );
 
-      const img = imgData && imgData.Response ? (imgData.Response.Image || imgData.Response.ImageDetail || imgData.Response) : null;
+      const album =
+        (albumData && albumData.Response && albumData.Response.Album) ||
+        (albumData && albumData.Response && albumData.Response.ImageAlbum) ||
+        null;
 
-      // Try common locations for the ImageAlbum URI
-      const albumUri =
-        // Most common: Response.Uris.ImageAlbum.Uri
-        (imgData && imgData.Response && imgData.Response.Uris && imgData.Response.Uris.ImageAlbum && imgData.Response.Uris.ImageAlbum.Uri) ||
-        // Sometimes nested on the Image object itself
-        (img && img.Uris && img.Uris.ImageAlbum && img.Uris.ImageAlbum.Uri) ||
-        // Sometimes directly expanded
-        (imgData && imgData.Response && imgData.Response.ImageAlbum && imgData.Response.ImageAlbum.Uri) ||
-        (img && img.ImageAlbum && img.ImageAlbum.Uri) ||
+      const albumKey =
+        (album && album.AlbumKey) ||
+        (Array.isArray(album) && album[0] && album[0].AlbumKey) ||
         "";
 
-      const uriStr = String(albumUri || "");
-      const albumKeyFromUri = (uriStr.match(/\/album\/([A-Za-z0-9]+)/i) || [])[1];
-
-      if (albumKeyFromUri) {
+      if (albumKey) {
         return res.json({
-          AlbumKey: albumKeyFromUri,
-          albumKey: albumKeyFromUri,
+          AlbumKey: albumKey,
+          albumKey,
           via: "image",
           imageKey,
           finalUrl
         });
       }
 
-      // If we couldn't parse it, still return helpful debug info
-      console.log("resolve-album: could not parse AlbumKey from image response", { imageKey, albumUri: uriStr });
       return res.json({
         AlbumKey: "",
         albumKey: "",
         via: "image",
-        rawUrl,
-        finalUrl,
         imageKey,
-        albumUri: uriStr,
-        info: "Could not parse AlbumKey from ImageAlbum URI"
+        finalUrl,
+        info: "ImageKey detected, but SmugMug !imagealbum did not return AlbumKey"
       });
-
     }
   } catch (err) {
     console.log("resolve-album imageKey path failed:", err.message);
@@ -302,7 +291,6 @@ app.get("/smug/resolve-album", async (req, res) => {
         if (urlName === leafNorm || urlName === leafDash) { hit = a; break; }
         if (name === leafNorm || name === leafDash) { hit = a; break; }
         if (title === leafNorm || title === leafDash) { hit = a; break; }
-
         if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { hit = a; break; }
       }
 
