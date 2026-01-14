@@ -204,24 +204,59 @@ app.get("/smug/resolve-album", async (req, res) => {
       const imageKey = m[1];
 
       // Most reliable: use the Image -> ImageAlbum link endpoint (!imagealbum)
-      const albumData = await smug(
-        `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
-      );
+      // NOTE: SmugMug sometimes returns AlbumKey as AlbumKey or Key depending on endpoint/verbosity.
+      let albumKey = "";
 
-      const album =
-        (albumData && albumData.Response && albumData.Response.Album) ||
-        (albumData && albumData.Response && albumData.Response.ImageAlbum) ||
-        null;
+      try {
+        const albumData = await smug(
+          `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
+        );
 
-      const albumKey =
-        (album && album.AlbumKey) ||
-        (Array.isArray(album) && album[0] && album[0].AlbumKey) ||
-        "";
+        const a =
+          (albumData && albumData.Response && (albumData.Response.Album || albumData.Response.ImageAlbum)) ||
+          null;
+
+        // a can be an object or an array; normalize.
+        const a0 = Array.isArray(a) ? (a[0] || null) : a;
+
+        albumKey = String(
+          (a0 && (a0.AlbumKey || a0.Key || a0.key)) || ""
+        ).trim();
+      } catch (err) {
+        console.log("resolve-album !imagealbum failed:", err.message);
+      }
+
+      // Fallback #2: ask for image detail and parse the ImageAlbum URI (works when !imagealbum is restricted)
+      if (!albumKey) {
+        try {
+          const imgData = await smug(
+            `/image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=ImageAlbum`
+          );
+
+          const uri =
+            (imgData && imgData.Response && imgData.Response.Uris && imgData.Response.Uris.ImageAlbum && imgData.Response.Uris.ImageAlbum.Uri) ||
+            (imgData && imgData.Response && imgData.Response.ImageAlbum && imgData.Response.ImageAlbum.Uri) ||
+            "";
+
+          const uriStr = String(uri || "");
+          const fromUri = (uriStr.match(/\/album\/([A-Za-z0-9]+)/i) || [])[1];
+          if (fromUri) albumKey = String(fromUri).trim();
+
+          // Sometimes AlbumKey is directly on expanded object
+          if (!albumKey) {
+            const a2 = imgData && imgData.Response ? (imgData.Response.Album || imgData.Response.ImageAlbum) : null;
+            const a20 = Array.isArray(a2) ? (a2[0] || null) : a2;
+            albumKey = String((a20 && (a20.AlbumKey || a20.Key || a20.key)) || "").trim();
+          }
+        } catch (err) {
+          console.log("resolve-album image detail fallback failed:", err.message);
+        }
+      }
 
       if (albumKey) {
         return res.json({
           AlbumKey: albumKey,
-          albumKey,
+          albumKey: albumKey,
           via: "image",
           imageKey,
           finalUrl
@@ -229,12 +264,13 @@ app.get("/smug/resolve-album", async (req, res) => {
       }
 
       return res.json({
+        Response: { Album: [] },
         AlbumKey: "",
         albumKey: "",
+        finalUrl,
         via: "image",
         imageKey,
-        finalUrl,
-        info: "ImageKey detected, but SmugMug !imagealbum did not return AlbumKey"
+        info: "ImageKey detected, but could not resolve AlbumKey (tried !imagealbum + image detail)"
       });
     }
   } catch (err) {
