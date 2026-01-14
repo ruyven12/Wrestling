@@ -100,18 +100,18 @@ app.get("/show-poster", async (req, res) => {
 // =========================================================
 
 // =========================================================
-// ✔ NEW: RESOLVE ALBUM URL → AlbumKey
+// ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
 // =========================================================
-// The Shows UI calls /smug/resolve-album?url=<smugmug-album-url>
-// We try to resolve a web URL by listing albums in the inferred parent folder
-// and matching the last path segment against Album.UrlName / Name / Title.
+// Frontend calls: /smug/resolve-album?url=<smugmug-url>
+// We attempt, in order:
+//  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
+//  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
 app.get("/smug/resolve-album", async (req, res) => {
   allowCors(res);
 
   const rawUrl = String(req.query.url || "").trim();
   if (!rawUrl) return res.status(400).json({ error: "missing url" });
 
-  // Helpers
   function norm(s) {
     return String(s || "")
       .trim()
@@ -125,32 +125,80 @@ app.get("/smug/resolve-album", async (req, res) => {
     return norm(s).replace(/\s+/g, "-");
   }
 
-  let urlObj = null;
-  try { urlObj = new URL(rawUrl); } catch (_) {}
-
-  // If it's not a valid URL, bail soft with empty.
-  if (!urlObj) {
-    return res.json({ AlbumKey: "", albumKey: "", info: "invalid url" });
+  // Try to follow redirects (SmugMug often redirects album-ish URLs to /photos/i-<ImageKey>/...)
+  let finalUrl = rawUrl;
+  try {
+    const r = await fetch(rawUrl, { redirect: "follow" });
+    if (r && r.url) finalUrl = r.url;
+  } catch (err) {
+    // ignore redirect failures; we'll attempt other resolution methods
+    console.log("resolve-album redirect check failed:", err.message);
   }
 
-  // Only attempt for vmpix.smugmug.com (or any smugmug domain) style URLs.
+  // If final URL looks like a SmugMug photo URL, extract ImageKey and resolve Image → AlbumKey
+  // Example: https://vmpix.smugmug.com/photos/i-DkRNfbM/0/Match-1  => ImageKey = DkRNfbM
+  try {
+    const u = new URL(finalUrl);
+    const p = String(u.pathname || "");
+    const m = p.match(/\/photos\/i-([A-Za-z0-9]+)\//i) || p.match(/\/i-([A-Za-z0-9]+)\//i);
+
+    if (m && m[1]) {
+      const imageKey = m[1];
+
+      // Ask SmugMug for image details and expand ImageAlbum (the parent gallery)
+      // smug() helper appends "&APIKey=..." so endpoint must include a query string before that.
+      const imgData = await smug(
+        `/image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=Image.ImageAlbum`
+      );
+
+      const img = imgData && imgData.Response ? (imgData.Response.Image || imgData.Response.ImageDetail || imgData.Response) : null;
+
+      // Try common locations for the ImageAlbum URI
+      const albumUri =
+        (img && img.ImageAlbum && img.ImageAlbum.Uri) ||
+        (img && img.Uris && img.Uris.ImageAlbum && img.Uris.ImageAlbum.Uri) ||
+        (imgData && imgData.Response && imgData.Response.ImageAlbum && imgData.Response.ImageAlbum.Uri) ||
+        "";
+
+      const uriStr = String(albumUri || "");
+      const albumKeyFromUri = (uriStr.match(/\/album\/([A-Za-z0-9]+)/i) || [])[1];
+
+      if (albumKeyFromUri) {
+        return res.json({
+          AlbumKey: albumKeyFromUri,
+          albumKey: albumKeyFromUri,
+          via: "image",
+          imageKey,
+          finalUrl
+        });
+      }
+
+      // If we couldn't parse it, still return helpful debug info
+      console.log("resolve-album: could not parse AlbumKey from image response", { imageKey, albumUri: uriStr });
+    }
+  } catch (err) {
+    console.log("resolve-album imageKey path failed:", err.message);
+  }
+
+  // Fallback: treat as album-ish URL and try to match leaf segment under parent folder.
+  let urlObj = null;
+  try { urlObj = new URL(finalUrl); } catch (_) {}
+
+  if (!urlObj) {
+    return res.json({ AlbumKey: "", albumKey: "", info: "invalid url", finalUrl });
+  }
+
   const parts = String(urlObj.pathname || "")
     .split("/")
     .filter(Boolean);
 
-  // Need at least 2 segments to have a parent folder and an album-ish leaf.
   if (parts.length < 2) {
-    return res.json({ AlbumKey: "", albumKey: "", info: "url path too short" });
+    return res.json({ AlbumKey: "", albumKey: "", info: "url path too short", finalUrl });
   }
 
-  // Leaf is the album-ish name, parentPath are folders above it.
   const leaf = parts[parts.length - 1];
   const parentParts = parts.slice(0, parts.length - 1);
 
-  // Try a few parent depths, because some URLs may include extra segments we don't want.
-  // Example URL coming from posters inference:
-  //   /Wrestling/Limitless/110825/Match-1
-  // Parent folder: /Wrestling/Limitless/110825
   const parentCandidates = [];
   for (let cut = parentParts.length; cut >= Math.max(1, parentParts.length - 2); cut--) {
     parentCandidates.push(parentParts.slice(0, cut));
@@ -171,21 +219,18 @@ app.get("/smug/resolve-album", async (req, res) => {
       const data = await smug(apiPath);
       const albums = data && data.Response && Array.isArray(data.Response.Album) ? data.Response.Album : [];
 
-      // Try match against common fields
       let hit = null;
       for (const a of albums) {
         const urlName = norm(a.UrlName || a.Urlname || "");
         const name = norm(a.Name || "");
         const title = norm(a.Title || "");
         const key = String(a.AlbumKey || a.Key || "").trim();
-
         if (!key) continue;
 
         if (urlName === leafNorm || urlName === leafDash) { hit = a; break; }
         if (name === leafNorm || name === leafDash) { hit = a; break; }
         if (title === leafNorm || title === leafDash) { hit = a; break; }
 
-        // Loose contains match (helps when leaf is "Match-1" but album title includes extra words)
         if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { hit = a; break; }
       }
 
@@ -194,22 +239,22 @@ app.get("/smug/resolve-album", async (req, res) => {
         return res.json({
           AlbumKey: k,
           albumKey: k,
-          Response: { Album: hit },
+          via: "folder",
+          finalUrl,
           _tried: tried
         });
       }
     } catch (err) {
-      // continue trying other parent candidates
       console.error("resolve-album error for", apiPath, err.message);
     }
   }
 
-  // Not found
   return res.json({
     Response: { Album: [] },
     AlbumKey: "",
     albumKey: "",
-    info: `No album resolved for url=${rawUrl} (tried: ${tried.join(" | ")})`
+    finalUrl,
+    info: `No album resolved for url=${rawUrl} (finalUrl=${finalUrl}) (tried: ${tried.join(" | ")})`
   });
 });
 
