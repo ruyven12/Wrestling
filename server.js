@@ -3,6 +3,14 @@ console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 const express = require("express");
 const app = express();
 
+// Global CORS (so even early errors include headers)
+app.use((req, res, next) => {
+  allowCors(res);
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+
 app.use(express.static(__dirname));
 
 // SmugMug API Key
@@ -21,6 +29,28 @@ const SHOWS_SHEET_URL =
 function allowCors(res) {
   res.set("Access-Control-Allow-Origin", "*");
 }
+
+
+// =========================================================
+// SIMPLE CACHE + TIMEOUT HELPERS (avoid Render edge 502 timeouts)
+// =========================================================
+const __cache = {
+  showsCsv: null,
+  showsFetchedAt: 0,
+};
+
+async function fetchTextWithTimeout(url, ms) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: controller.signal });
+    const txt = await r.text();
+    return { ok: r.ok, status: r.status, text: txt };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 
 // =========================================================
 // ✔ FIXED: SmugMug API helper (must be ABOVE all routes)
@@ -59,15 +89,42 @@ app.get("/sheet/bands", async (req, res) => {
 });
 
 app.get("/sheet/shows", async (req, res) => {
+  // CORS already applied by global middleware, but keep explicit for clarity
+  allowCors(res);
+
+  // If we have a fresh cache (last 10 minutes), serve it immediately.
+  const now = Date.now();
+  if (__cache.showsCsv && now - __cache.showsFetchedAt < 10 * 60 * 1000) {
+    res.set("X-Cache", "HIT");
+    return res.type("text/plain").send(__cache.showsCsv);
+  }
+
   try {
-    const r = await fetch(SHOWS_SHEET_URL);
-    const csv = await r.text();
-    allowCors(res);
-    res.type("text/plain").send(csv);
+    // Fast timeout so the edge proxy never returns a 502 without CORS headers
+    const out = await fetchTextWithTimeout(SHOWS_SHEET_URL, 8000);
+
+    if (!out.ok) {
+      console.error("sheet /shows upstream not ok:", out.status);
+      // If we have any cache, serve stale instead of failing hard
+      if (__cache.showsCsv) {
+        res.set("X-Cache", "STALE");
+        return res.type("text/plain").send(__cache.showsCsv);
+      }
+      return res.status(502).send("shows sheet upstream error");
+    }
+
+    __cache.showsCsv = out.text;
+    __cache.showsFetchedAt = now;
+
+    res.set("X-Cache", "MISS");
+    return res.type("text/plain").send(out.text);
   } catch (err) {
-    console.error("sheet /shows fetch failed:", err);
-    allowCors(res);
-    res.status(500).send("shows sheet error");
+    console.error("sheet /shows fetch failed:", err && err.message ? err.message : err);
+    if (__cache.showsCsv) {
+      res.set("X-Cache", "STALE");
+      return res.type("text/plain").send(__cache.showsCsv);
+    }
+    return res.status(500).send("shows sheet error");
   }
 });
 
