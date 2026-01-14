@@ -1,6 +1,8 @@
 console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 
 const express = require("express");
+let archiver = null;
+try { archiver = require("archiver"); } catch (e) { /* optional */ }
 const app = express();
 
 // Global CORS (so even early errors include headers)
@@ -89,8 +91,10 @@ app.get("/sheet/bands", async (req, res) => {
 });
 
 app.get("/sheet/shows", async (req, res) => {
+  // CORS already applied by global middleware, but keep explicit for clarity
   allowCors(res);
 
+  // If we have a fresh cache (last 10 minutes), serve it immediately.
   const now = Date.now();
   if (__cache.showsCsv && now - __cache.showsFetchedAt < 10 * 60 * 1000) {
     res.set("X-Cache", "HIT");
@@ -98,10 +102,12 @@ app.get("/sheet/shows", async (req, res) => {
   }
 
   try {
+    // Fast timeout so the edge proxy never returns a 502 without CORS headers
     const out = await fetchTextWithTimeout(SHOWS_SHEET_URL, 8000);
 
     if (!out.ok) {
       console.error("sheet /shows upstream not ok:", out.status);
+      // If we have any cache, serve stale instead of failing hard
       if (__cache.showsCsv) {
         res.set("X-Cache", "STALE");
         return res.type("text/plain").send(__cache.showsCsv);
@@ -111,6 +117,7 @@ app.get("/sheet/shows", async (req, res) => {
 
     __cache.showsCsv = out.text;
     __cache.showsFetchedAt = now;
+
     res.set("X-Cache", "MISS");
     return res.type("text/plain").send(out.text);
   } catch (err) {
@@ -155,6 +162,9 @@ app.get("/show-poster", async (req, res) => {
 // ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
 // =========================================================
 // Frontend calls: /smug/resolve-album?url=<smugmug-url>
+// We attempt, in order:
+//  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
+//  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
 app.get("/smug/resolve-album", async (req, res) => {
   allowCors(res);
 
@@ -174,82 +184,76 @@ app.get("/smug/resolve-album", async (req, res) => {
     return norm(s).replace(/\s+/g, "-");
   }
 
-  // Follow redirects (SmugMug may redirect album-ish URLs to /photos/i-<ImageKey>/...)
+  // Try to follow redirects (SmugMug often redirects album-ish URLs to /photos/i-<ImageKey>/...)
   let finalUrl = rawUrl;
   try {
     const r = await fetch(rawUrl, { redirect: "follow" });
     if (r && r.url) finalUrl = r.url;
   } catch (err) {
+    // ignore redirect failures; we'll attempt other resolution methods
     console.log("resolve-album redirect check failed:", err.message);
   }
 
-  // If final URL looks like a SmugMug photo URL, extract ImageKey and attempt resolution.
+  // If final URL looks like a SmugMug photo URL, extract ImageKey and resolve Image → AlbumKey
+  // Example: https://vmpix.smugmug.com/photos/i-DkRNfbM/0/Match-1  => ImageKey = DkRNfbM
   try {
     const u = new URL(finalUrl);
     const p = String(u.pathname || "");
-    const mm = p.match(/\/photos\/i-([A-Za-z0-9]+)\//i) || p.match(/\/i-([A-Za-z0-9]+)\//i);
+    const m = p.match(/\/photos\/i-([A-Za-z0-9]+)\//i) || p.match(/\/i-([A-Za-z0-9]+)\//i);
 
-    if (mm && mm[1]) {
-      const imageKey = mm[1];
+    if (m && m[1]) {
+      const imageKey = m[1];
 
-      // Attempt #1: Image -> ImageAlbum (direct)
-      try {
-        const albumData = await smug(
-          `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
-        );
-        const a = albumData && albumData.Response ? (albumData.Response.Album || albumData.Response.ImageAlbum) : null;
-        const a0 = Array.isArray(a) ? (a[0] || null) : a;
-        const albumKey = String((a0 && (a0.AlbumKey || a0.Key || a0.key)) || "").trim();
+      // Ask SmugMug for image details and expand ImageAlbum (the parent gallery)
+      // smug() helper appends "&APIKey=..." so endpoint must include a query string before that.
+      const imgData = await smug(
+        `/image/${encodeURIComponent(imageKey)}-0?_accept=application/json&_verbosity=1&_expand=Image&_expand=Image.ImageAlbum`
+      );
 
-        if (albumKey) {
-          return res.json({ AlbumKey: albumKey, albumKey: albumKey, via: "imagealbum", imageKey, finalUrl });
-        }
-      } catch (err) {
-        console.log("resolve-album !imagealbum failed:", err.message);
+      const img = imgData && imgData.Response ? (imgData.Response.Image || imgData.Response.ImageDetail || imgData.Response) : null;
+
+      // Try common locations for the ImageAlbum URI
+      const albumUri =
+        (img && img.ImageAlbum && img.ImageAlbum.Uri) ||
+        (img && img.Uris && img.Uris.ImageAlbum && img.Uris.ImageAlbum.Uri) ||
+        (imgData && imgData.Response && imgData.Response.ImageAlbum && imgData.Response.ImageAlbum.Uri) ||
+        "";
+
+      const uriStr = String(albumUri || "");
+      const albumKeyFromUri = (uriStr.match(/\/album\/([A-Za-z0-9]+)/i) || [])[1];
+
+      if (albumKeyFromUri) {
+        return res.json({
+          AlbumKey: albumKeyFromUri,
+          albumKey: albumKeyFromUri,
+          via: "image",
+          imageKey,
+          finalUrl
+        });
       }
 
-      // Attempt #2: Parent folder fallback (uses original URL structure)
-      try {
-        const u0 = new URL(rawUrl);
-        const parts0 = String(u0.pathname || "").split("/").filter(Boolean);
-        if (parts0.length >= 2) {
-          const parent0 = parts0.slice(0, parts0.length - 1); // drop Match-1
-          const folderPath0 = parent0.map(s => decodeURIComponent(s)).join("/");
-          const data0 = await smug(`/folder/user/vmpix/${folderPath0}!albums?_accept=application/json&_verbosity=1`);
-          const albums0 = data0 && data0.Response && Array.isArray(data0.Response.Album) ? data0.Response.Album : [];
-          if (albums0.length === 1) {
-            const k0 = String(albums0[0].AlbumKey || albums0[0].Key || "").trim();
-            if (k0) {
-              return res.json({ AlbumKey: k0, albumKey: k0, via: "folder-single", imageKey, finalUrl, parentFolder: folderPath0 });
-            }
-          }
-        }
-      } catch (err) {
-        console.log("resolve-album parent folder fallback failed:", err.message);
-      }
-
-      return res.json({
-        Response: { Album: [] },
-        AlbumKey: "",
-        albumKey: "",
-        finalUrl,
-        via: "image",
-        imageKey,
-        info: "ImageKey detected, but could not resolve AlbumKey (tried !imagealbum + parent folder)"
-      });
+      // If we couldn't parse it, still return helpful debug info
+      console.log("resolve-album: could not parse AlbumKey from image response", { imageKey, albumUri: uriStr });
     }
   } catch (err) {
-    console.log("resolve-album imageKey parse failed:", err.message);
+    console.log("resolve-album imageKey path failed:", err.message);
   }
 
   // Fallback: treat as album-ish URL and try to match leaf segment under parent folder.
   let urlObj = null;
   try { urlObj = new URL(finalUrl); } catch (_) {}
 
-  if (!urlObj) return res.json({ AlbumKey: "", albumKey: "", info: "invalid url", finalUrl });
+  if (!urlObj) {
+    return res.json({ AlbumKey: "", albumKey: "", info: "invalid url", finalUrl });
+  }
 
-  const parts = String(urlObj.pathname || "").split("/").filter(Boolean);
-  if (parts.length < 2) return res.json({ AlbumKey: "", albumKey: "", info: "url path too short", finalUrl });
+  const parts = String(urlObj.pathname || "")
+    .split("/")
+    .filter(Boolean);
+
+  if (parts.length < 2) {
+    return res.json({ AlbumKey: "", albumKey: "", info: "url path too short", finalUrl });
+  }
 
   const leaf = parts[parts.length - 1];
   const parentParts = parts.slice(0, parts.length - 1);
@@ -261,16 +265,20 @@ app.get("/smug/resolve-album", async (req, res) => {
 
   const leafNorm = norm(leaf);
   const leafDash = normDash(leaf);
+
   const tried = [];
 
   for (const parent of parentCandidates) {
     const folderPath = parent.map(p => decodeURIComponent(p)).join("/");
     const apiPath = `/folder/user/vmpix/${folderPath}!albums?_accept=application/json`;
+
     tried.push(apiPath);
 
     try {
       const data = await smug(apiPath);
       const albums = data && data.Response && Array.isArray(data.Response.Album) ? data.Response.Album : [];
+
+      let hit = null;
       for (const a of albums) {
         const urlName = norm(a.UrlName || a.Urlname || "");
         const name = norm(a.Name || "");
@@ -278,9 +286,22 @@ app.get("/smug/resolve-album", async (req, res) => {
         const key = String(a.AlbumKey || a.Key || "").trim();
         if (!key) continue;
 
-        if (urlName === leafNorm || urlName === leafDash || name === leafNorm || name === leafDash || title === leafNorm || title === leafDash) {
-          return res.json({ AlbumKey: key, albumKey: key, via: "folder", finalUrl, _tried: tried });
-        }
+        if (urlName === leafNorm || urlName === leafDash) { hit = a; break; }
+        if (name === leafNorm || name === leafDash) { hit = a; break; }
+        if (title === leafNorm || title === leafDash) { hit = a; break; }
+
+        if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { hit = a; break; }
+      }
+
+      if (hit) {
+        const k = String(hit.AlbumKey || hit.Key || "").trim();
+        return res.json({
+          AlbumKey: k,
+          albumKey: k,
+          via: "folder",
+          finalUrl,
+          _tried: tried
+        });
       }
     } catch (err) {
       console.error("resolve-album error for", apiPath, err.message);
@@ -298,7 +319,6 @@ app.get("/smug/resolve-album", async (req, res) => {
 
 app.get("/smug/:slug", async (req, res) => {
   const slug = req.params.slug;
-  if (slug === "resolve-album") return res.status(404).json({ error: "use /smug/resolve-album?url=..." });
   const folderFromSheet = req.query.folder;
   const region = req.query.region || "Local";
 
@@ -473,6 +493,51 @@ app.get("/smug/image/:imageKey", async (req, res) => {
 // SERVER START
 // =========================================================
 const PORT = process.env.PORT || 3000;
+
+
+// ---------------- ZIP DOWNLOAD (optional, used by front-end Select -> Download ZIP) ----------------
+// POST /zip { items: [{url, filename}] }
+app.post("/zip", async (req, res) => {
+  try {
+    if (!archiver) {
+      return res.status(501).send("ZIP not available (missing dependency: archiver). Run: npm i archiver");
+    }
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length) return res.status(400).send("No items provided");
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", 'attachment; filename="photos.zip"');
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.on("error", (err) => {
+      console.error("archiver error", err);
+      try { res.status(500).end(); } catch (_) {}
+    });
+    archive.pipe(res);
+
+    for (const it of items) {
+      const url = String(it?.url || "").trim();
+      if (!url) continue;
+      const filename = String(it?.filename || "photo.jpg").replace(/[\\/]+/g, "_");
+
+      try {
+        const r = await fetch(url);
+        if (!r.ok) {
+          console.warn("zip fetch failed", r.status, url);
+          continue;
+        }
+        archive.append(r.body, { name: filename });
+      } catch (e) {
+        console.warn("zip fetch exception", url, e);
+      }
+    }
+
+    await archive.finalize();
+  } catch (e) {
+    console.error("zip route failed", e);
+    try { res.status(500).send("ZIP failed"); } catch (_) {}
+  }
+});
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
