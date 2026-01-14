@@ -98,6 +98,121 @@ app.get("/show-poster", async (req, res) => {
 // =========================================================
 // SMART FOLDER → ALBUMS
 // =========================================================
+
+// =========================================================
+// ✔ NEW: RESOLVE ALBUM URL → AlbumKey
+// =========================================================
+// The Shows UI calls /smug/resolve-album?url=<smugmug-album-url>
+// We try to resolve a web URL by listing albums in the inferred parent folder
+// and matching the last path segment against Album.UrlName / Name / Title.
+app.get("/smug/resolve-album", async (req, res) => {
+  allowCors(res);
+
+  const rawUrl = String(req.query.url || "").trim();
+  if (!rawUrl) return res.status(400).json({ error: "missing url" });
+
+  // Helpers
+  function norm(s) {
+    return String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/%20/g, " ")
+      .replace(/[+]/g, " ")
+      .replace(/[_]/g, "-")
+      .replace(/\s+/g, " ");
+  }
+  function normDash(s) {
+    return norm(s).replace(/\s+/g, "-");
+  }
+
+  let urlObj = null;
+  try { urlObj = new URL(rawUrl); } catch (_) {}
+
+  // If it's not a valid URL, bail soft with empty.
+  if (!urlObj) {
+    return res.json({ AlbumKey: "", albumKey: "", info: "invalid url" });
+  }
+
+  // Only attempt for vmpix.smugmug.com (or any smugmug domain) style URLs.
+  const parts = String(urlObj.pathname || "")
+    .split("/")
+    .filter(Boolean);
+
+  // Need at least 2 segments to have a parent folder and an album-ish leaf.
+  if (parts.length < 2) {
+    return res.json({ AlbumKey: "", albumKey: "", info: "url path too short" });
+  }
+
+  // Leaf is the album-ish name, parentPath are folders above it.
+  const leaf = parts[parts.length - 1];
+  const parentParts = parts.slice(0, parts.length - 1);
+
+  // Try a few parent depths, because some URLs may include extra segments we don't want.
+  // Example URL coming from posters inference:
+  //   /Wrestling/Limitless/110825/Match-1
+  // Parent folder: /Wrestling/Limitless/110825
+  const parentCandidates = [];
+  for (let cut = parentParts.length; cut >= Math.max(1, parentParts.length - 2); cut--) {
+    parentCandidates.push(parentParts.slice(0, cut));
+  }
+
+  const leafNorm = norm(leaf);
+  const leafDash = normDash(leaf);
+
+  const tried = [];
+
+  for (const parent of parentCandidates) {
+    const folderPath = parent.map(p => decodeURIComponent(p)).join("/");
+    const apiPath = `/folder/user/vmpix/${folderPath}!albums?_accept=application/json`;
+
+    tried.push(apiPath);
+
+    try {
+      const data = await smug(apiPath);
+      const albums = data && data.Response && Array.isArray(data.Response.Album) ? data.Response.Album : [];
+
+      // Try match against common fields
+      let hit = null;
+      for (const a of albums) {
+        const urlName = norm(a.UrlName || a.Urlname || "");
+        const name = norm(a.Name || "");
+        const title = norm(a.Title || "");
+        const key = String(a.AlbumKey || a.Key || "").trim();
+
+        if (!key) continue;
+
+        if (urlName === leafNorm || urlName === leafDash) { hit = a; break; }
+        if (name === leafNorm || name === leafDash) { hit = a; break; }
+        if (title === leafNorm || title === leafDash) { hit = a; break; }
+
+        // Loose contains match (helps when leaf is "Match-1" but album title includes extra words)
+        if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { hit = a; break; }
+      }
+
+      if (hit) {
+        const k = String(hit.AlbumKey || hit.Key || "").trim();
+        return res.json({
+          AlbumKey: k,
+          albumKey: k,
+          Response: { Album: hit },
+          _tried: tried
+        });
+      }
+    } catch (err) {
+      // continue trying other parent candidates
+      console.error("resolve-album error for", apiPath, err.message);
+    }
+  }
+
+  // Not found
+  return res.json({
+    Response: { Album: [] },
+    AlbumKey: "",
+    albumKey: "",
+    info: `No album resolved for url=${rawUrl} (tried: ${tried.join(" | ")})`
+  });
+});
+
 app.get("/smug/:slug", async (req, res) => {
   const slug = req.params.slug;
   const folderFromSheet = req.query.folder;
