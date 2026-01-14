@@ -155,21 +155,150 @@ app.get("/show-poster", async (req, res) => {
 // ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
 // =========================================================
 // Frontend calls: /smug/resolve-album?url=<smugmug-url>
-// We attempt, in order:
-//  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
-//  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
+app.get("/smug/resolve-album", async (req, res) => {
+  allowCors(res);
 
+  const rawUrl = String(req.query.url || "").trim();
+  if (!rawUrl) return res.status(400).json({ error: "missing url" });
 
-// =========================================================
-// ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
-// =========================================================
-// Frontend calls: /smug/resolve-album?url=<smugmug-url>
-// We attempt, in order:
-//  1) Follow redirects; if final URL is a photo page, extract ImageKey and resolve → AlbumKey using !imagealbum
-//  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
+  function norm(s) {
+    return String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/%20/g, " ")
+      .replace(/[+]/g, " ")
+      .replace(/[_]/g, "-")
+      .replace(/\s+/g, " ");
+  }
+  function normDash(s) {
+    return norm(s).replace(/\s+/g, "-");
+  }
+
+  // Follow redirects (SmugMug may redirect album-ish URLs to /photos/i-<ImageKey>/...)
+  let finalUrl = rawUrl;
+  try {
+    const r = await fetch(rawUrl, { redirect: "follow" });
+    if (r && r.url) finalUrl = r.url;
+  } catch (err) {
+    console.log("resolve-album redirect check failed:", err.message);
+  }
+
+  // If final URL looks like a SmugMug photo URL, extract ImageKey and attempt resolution.
+  try {
+    const u = new URL(finalUrl);
+    const p = String(u.pathname || "");
+    const mm = p.match(/\/photos\/i-([A-Za-z0-9]+)\//i) || p.match(/\/i-([A-Za-z0-9]+)\//i);
+
+    if (mm && mm[1]) {
+      const imageKey = mm[1];
+
+      // Attempt #1: Image -> ImageAlbum (direct)
+      try {
+        const albumData = await smug(
+          `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
+        );
+        const a = albumData && albumData.Response ? (albumData.Response.Album || albumData.Response.ImageAlbum) : null;
+        const a0 = Array.isArray(a) ? (a[0] || null) : a;
+        const albumKey = String((a0 && (a0.AlbumKey || a0.Key || a0.key)) || "").trim();
+
+        if (albumKey) {
+          return res.json({ AlbumKey: albumKey, albumKey: albumKey, via: "imagealbum", imageKey, finalUrl });
+        }
+      } catch (err) {
+        console.log("resolve-album !imagealbum failed:", err.message);
+      }
+
+      // Attempt #2: Parent folder fallback (uses original URL structure)
+      try {
+        const u0 = new URL(rawUrl);
+        const parts0 = String(u0.pathname || "").split("/").filter(Boolean);
+        if (parts0.length >= 2) {
+          const parent0 = parts0.slice(0, parts0.length - 1); // drop Match-1
+          const folderPath0 = parent0.map(s => decodeURIComponent(s)).join("/");
+          const data0 = await smug(`/folder/user/vmpix/${folderPath0}!albums?_accept=application/json&_verbosity=1`);
+          const albums0 = data0 && data0.Response && Array.isArray(data0.Response.Album) ? data0.Response.Album : [];
+          if (albums0.length === 1) {
+            const k0 = String(albums0[0].AlbumKey || albums0[0].Key || "").trim();
+            if (k0) {
+              return res.json({ AlbumKey: k0, albumKey: k0, via: "folder-single", imageKey, finalUrl, parentFolder: folderPath0 });
+            }
+          }
+        }
+      } catch (err) {
+        console.log("resolve-album parent folder fallback failed:", err.message);
+      }
+
+      return res.json({
+        Response: { Album: [] },
+        AlbumKey: "",
+        albumKey: "",
+        finalUrl,
+        via: "image",
+        imageKey,
+        info: "ImageKey detected, but could not resolve AlbumKey (tried !imagealbum + parent folder)"
+      });
+    }
+  } catch (err) {
+    console.log("resolve-album imageKey parse failed:", err.message);
+  }
+
+  // Fallback: treat as album-ish URL and try to match leaf segment under parent folder.
+  let urlObj = null;
+  try { urlObj = new URL(finalUrl); } catch (_) {}
+
+  if (!urlObj) return res.json({ AlbumKey: "", albumKey: "", info: "invalid url", finalUrl });
+
+  const parts = String(urlObj.pathname || "").split("/").filter(Boolean);
+  if (parts.length < 2) return res.json({ AlbumKey: "", albumKey: "", info: "url path too short", finalUrl });
+
+  const leaf = parts[parts.length - 1];
+  const parentParts = parts.slice(0, parts.length - 1);
+
+  const parentCandidates = [];
+  for (let cut = parentParts.length; cut >= Math.max(1, parentParts.length - 2); cut--) {
+    parentCandidates.push(parentParts.slice(0, cut));
+  }
+
+  const leafNorm = norm(leaf);
+  const leafDash = normDash(leaf);
+  const tried = [];
+
+  for (const parent of parentCandidates) {
+    const folderPath = parent.map(p => decodeURIComponent(p)).join("/");
+    const apiPath = `/folder/user/vmpix/${folderPath}!albums?_accept=application/json`;
+    tried.push(apiPath);
+
+    try {
+      const data = await smug(apiPath);
+      const albums = data && data.Response && Array.isArray(data.Response.Album) ? data.Response.Album : [];
+      for (const a of albums) {
+        const urlName = norm(a.UrlName || a.Urlname || "");
+        const name = norm(a.Name || "");
+        const title = norm(a.Title || "");
+        const key = String(a.AlbumKey || a.Key || "").trim();
+        if (!key) continue;
+
+        if (urlName === leafNorm || urlName === leafDash || name === leafNorm || name === leafDash || title === leafNorm || title === leafDash) {
+          return res.json({ AlbumKey: key, albumKey: key, via: "folder", finalUrl, _tried: tried });
+        }
+      }
+    } catch (err) {
+      console.error("resolve-album error for", apiPath, err.message);
+    }
+  }
+
+  return res.json({
+    Response: { Album: [] },
+    AlbumKey: "",
+    albumKey: "",
+    finalUrl,
+    info: `No album resolved for url=${rawUrl} (finalUrl=${finalUrl}) (tried: ${tried.join(" | ")})`
+  });
+});
 
 app.get("/smug/:slug", async (req, res) => {
   const slug = req.params.slug;
+  if (slug === "resolve-album") return res.status(404).json({ error: "use /smug/resolve-album?url=..." });
   const folderFromSheet = req.query.folder;
   const region = req.query.region || "Local";
 
@@ -347,192 +476,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
-
-// =========================================================
-// ✔ RESOLVE ALBUM URL → AlbumKey (handles album-like URLs AND photo URLs)
-// =========================================================
-// Frontend calls: /smug/resolve-album?url=<smugmug-url>
-// We attempt, in order:
-//  1) Follow redirects; if final URL is a photo page, extract ImageKey and resolve → AlbumKey using !imagealbum
-//  2) If that fails, derive parent folder from original URL and return the only album in that folder (show gallery)
-//  3) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
-app.get("/smug/resolve-album", async (req, res) => {
-  allowCors(res);
-
-  const rawUrl = String(req.query.url || "").trim();
-  if (!rawUrl) return res.status(400).json({ error: "missing url" });
-
-  function norm(s) {
-    return String(s || "")
-      .trim()
-      .toLowerCase()
-      .replace(/%20/g, " ")
-      .replace(/[+]/g, " ")
-      .replace(/[_]/g, "-")
-      .replace(/\s+/g, " ");
-  }
-  function normDash(s) {
-    return norm(s).replace(/\s+/g, "-");
-  }
-
-  let finalUrl = rawUrl;
-  try {
-    const r = await fetch(rawUrl, { redirect: "follow" });
-    if (r && r.url) finalUrl = r.url;
-  } catch (err) {
-    console.log("resolve-album redirect check failed:", err.message);
-  }
-
-  // If final URL looks like a SmugMug photo URL, extract ImageKey and resolve Image → AlbumKey
-  try {
-    const u = new URL(finalUrl);
-    const p = String(u.pathname || "");
-    const m = p.match(/\/photos\/i-([A-Za-z0-9]+)\//i) || p.match(/\/i-([A-Za-z0-9]+)\//i);
-
-    if (m && m[1]) {
-      const imageKey = m[1];
-
-      // Attempt #1: Image -> ImageAlbum (most direct)
-      let albumKey = "";
-      try {
-        const albumData = await smug(
-          `/image/${encodeURIComponent(imageKey)}-0!imagealbum?_accept=application/json&_verbosity=1`
-        );
-        const a =
-          (albumData && albumData.Response && (albumData.Response.Album || albumData.Response.ImageAlbum)) ||
-          null;
-        const a0 = Array.isArray(a) ? (a[0] || null) : a;
-        albumKey = String((a0 && (a0.AlbumKey || a0.Key || a0.key)) || "").trim();
-      } catch (err) {
-        console.log("resolve-album !imagealbum failed:", err.message);
-      }
-
-      if (albumKey) {
-        return res.json({
-          AlbumKey: albumKey,
-          albumKey: albumKey,
-          via: "imagealbum",
-          imageKey,
-          finalUrl
-        });
-      }
-
-      // Attempt #2: Parent folder fallback (show gallery)
-      try {
-        const u0 = new URL(rawUrl);
-        const parts0 = String(u0.pathname || "").split("/").filter(Boolean);
-        if (parts0.length >= 2) {
-          const parent0 = parts0.slice(0, parts0.length - 1); // drop Match-1
-          const folderPath0 = parent0.map(p => decodeURIComponent(p)).join("/");
-          const data0 = await smug(`/folder/user/vmpix/${folderPath0}!albums?_accept=application/json&_verbosity=1`);
-          const albums0 = data0 && data0.Response && Array.isArray(data0.Response.Album) ? data0.Response.Album : [];
-          if (albums0.length === 1) {
-            const k0 = String(albums0[0].AlbumKey || albums0[0].Key || "").trim();
-            if (k0) {
-              return res.json({
-                AlbumKey: k0,
-                albumKey: k0,
-                via: "folder-single",
-                imageKey,
-                finalUrl,
-                parentFolder: folderPath0
-              });
-            }
-          }
-        }
-      } catch (err) {
-        console.log("resolve-album parent folder fallback failed:", err.message);
-      }
-
-      // If we still can't resolve, return debug info.
-      return res.json({
-        Response: { Album: [] },
-        AlbumKey: "",
-        albumKey: "",
-        finalUrl,
-        via: "image",
-        imageKey,
-        info: "ImageKey detected, but could not resolve AlbumKey (tried !imagealbum + parent folder)"
-      });
-    }
-  } catch (err) {
-    console.log("resolve-album imageKey path failed:", err.message);
-  }
-
-  // Fallback: treat as album-ish URL and try to match leaf segment under parent folder.
-  let urlObj = null;
-  try { urlObj = new URL(finalUrl); } catch (_) {}
-
-  if (!urlObj) {
-    return res.json({ AlbumKey: "", albumKey: "", info: "invalid url", finalUrl });
-  }
-
-  const parts = String(urlObj.pathname || "")
-    .split("/")
-    .filter(Boolean);
-
-  if (parts.length < 2) {
-    return res.json({ AlbumKey: "", albumKey: "", info: "url path too short", finalUrl });
-  }
-
-  const leaf = parts[parts.length - 1];
-  const parentParts = parts.slice(0, parts.length - 1);
-
-  const parentCandidates = [];
-  for (let cut = parentParts.length; cut >= Math.max(1, parentParts.length - 2); cut--) {
-    parentCandidates.push(parentParts.slice(0, cut));
-  }
-
-  const leafNorm = norm(leaf);
-  const leafDash = normDash(leaf);
-
-  const tried = [];
-
-  for (const parent of parentCandidates) {
-    const folderPath = parent.map(p => decodeURIComponent(p)).join("/");
-    const apiPath = `/folder/user/vmpix/${folderPath}!albums?_accept=application/json`;
-
-    tried.push(apiPath);
-
-    try {
-      const data = await smug(apiPath);
-      const albums = data && data.Response && Array.isArray(data.Response.Album) ? data.Response.Album : [];
-
-      let hit = null;
-      for (const a of albums) {
-        const urlName = norm(a.UrlName || a.Urlname || "");
-        const name = norm(a.Name || "");
-        const title = norm(a.Title || "");
-        const key = String(a.AlbumKey || a.Key || "").trim();
-        if (!key) continue;
-
-        if (urlName === leafNorm || urlName === leafDash) { hit = a; break; }
-        if (name === leafNorm || name === leafDash) { hit = a; break; }
-        if (title === leafNorm || title === leafDash) { hit = a; break; }
-        if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { hit = a; break; }
-      }
-
-      if (hit) {
-        const k = String(hit.AlbumKey || hit.Key || "").trim();
-        return res.json({
-          AlbumKey: k,
-          albumKey: k,
-          via: "folder",
-          finalUrl,
-          _tried: tried
-        });
-      }
-    } catch (err) {
-      console.error("resolve-album error for", apiPath, err.message);
-    }
-  }
-
-  return res.json({
-    Response: { Album: [] },
-    AlbumKey: "",
-    albumKey: "",
-    finalUrl,
-    info: `No album resolved for url=${rawUrl} (finalUrl=${finalUrl}) (tried: ${tried.join(" | ")})`
-  });
-});
-
