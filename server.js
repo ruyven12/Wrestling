@@ -475,7 +475,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
   const url = `https://api.smugmug.com/api/v2/album/${encodeURIComponent(
     albumKey
-  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image`;
+  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_verbosity=1&_expand=Image`;
 
   console.log("PROXY ALBUM IMAGES:", url);
 
@@ -515,7 +515,14 @@ app.get("/smug/album/:albumKey", async (req, res) => {
        if (needs && list.length) {
          await mapLimit(list, 6, async (it) => {
            const img = (it && it.Image) ? it.Image : {};
-           const imageKey = (img && img.ImageKey) || it.ImageKey || "";
+           const imageKey = (function(){
+             const k1 = (img && img.ImageKey) || it.ImageKey;
+             if (k1) return String(k1).trim();
+             // Sometimes ImageKey isn't included; try parsing from Image.Uri (/api/v2/image/<key>-0)
+             const uri = (img && img.Uri) ? String(img.Uri) : "";
+             const m = uri.match(/\/image\/([A-Za-z0-9]+)-/i);
+             return m && m[1] ? m[1] : "";
+           })();
            if (!imageKey) return it;
 
            const urls = await getImageSizesUrls(imageKey);
