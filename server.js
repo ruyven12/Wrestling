@@ -165,13 +165,19 @@ app.get("/sheet/shows", async (req, res) => {
   // CORS already applied by global middleware, but keep explicit for clarity
   allowCors(res);
 
+  // Help browsers/proxies not cache this CSV (we already have our own server cache)
+  res.set("Cache-Control", "no-store");
+
+  // Allow bypassing cache during testing:
+  //   /sheet/shows?nocache=1
+  const bypass = String(req.query.nocache || "") === "1";
+
   // If we have a fresh cache (last 10 minutes), serve it immediately.
   const now = Date.now();
-  if (__cache.showsCsv && now - __cache.showsFetchedAt < 10 * 60 * 1000) {
+  if (!bypass && __cache.showsCsv && now - __cache.showsFetchedAt < 10 * 60 * 1000) {
     res.set("X-Cache", "HIT");
     return res.type("text/plain").send(__cache.showsCsv);
   }
-
   try {
     // Fast timeout so the edge proxy never returns a 502 without CORS headers
     const out = await fetchTextWithTimeout(SHOWS_SHEET_URL, 8000);
