@@ -1,8 +1,9 @@
-console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
+console.log(">>> SERVER FILE VERSION: ZIP+ALBUM SIZES + CORS (ARCHIVER DEP) <<<");
 
 const express = require("express");
 let archiver = null;
 try { archiver = require("archiver"); } catch (e) { /* optional */ }
+if (!archiver) { console.warn("WARNING: archiver not installed; /zip will return 501. Add it to dependencies."); }
 const app = express();
 
 // Parse JSON bodies (needed for POST /zip)
