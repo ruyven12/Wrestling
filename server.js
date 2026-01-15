@@ -1,17 +1,13 @@
-console.log(">>> SERVER FILE VERSION: ZIP+ALBUM SIZES + CORS (ARCHIVER DEP) <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 
 const express = require("express");
 let archiver = null;
 try { archiver = require("archiver"); } catch (e) { /* optional */ }
-if (!archiver) { console.warn("WARNING: archiver not installed; /zip will return 501. Add it to dependencies."); }
 const app = express();
-
-// Parse JSON bodies (needed for POST /zip)
-app.use(express.json({ limit: "10mb" }));
 
 // Global CORS (so even early errors include headers)
 app.use((req, res, next) => {
-  allowCors(res, req);
+  allowCors(res);
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -32,29 +28,8 @@ const SHOWS_SHEET_URL =
 // =========================================================
 // UNIVERSAL CORS
 // =========================================================
-function allowCors(res, req) {
-  // Allow SmugMug-hosted pages to call this API (ZIP POST requires preflight)
-  const origin = req && req.headers ? String(req.headers.origin || "") : "";
-  const allowList = new Set([
-    "https://vmpix.smugmug.com",
-    "https://www.vmpix.smugmug.com",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-  ]);
-
-  // Use explicit origin when possible (keeps browsers happy with preflight), otherwise fall back to "*"
-  if (origin && allowList.has(origin)) {
-    res.set("Access-Control-Allow-Origin", origin);
-    res.set("Vary", "Origin");
-  } else {
-    res.set("Access-Control-Allow-Origin", "*");
-  }
-
-  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
-  res.set("Access-Control-Max-Age", "86400");
+function allowCors(res) {
+  res.set("Access-Control-Allow-Origin", "*");
 }
 
 
@@ -100,86 +75,24 @@ async function smug(endpoint) {
 }
 
 // =========================================================
-// IMAGE SIZES HELPERS (for ZIP downloads)
-// SmugMug album image listings often don't include full-size URLs.
-// We fetch sizes per ImageKey and cache them in-memory.
-// =========================================================
-const __imgSizeCache = new Map(); // imageKey -> { ...Url fields }
-async function getImageSizesUrls(imageKey) {
-  const k = String(imageKey || "").trim();
-  if (!k) return {};
-  if (__imgSizeCache.has(k)) return __imgSizeCache.get(k);
-
-  // Smug: /image/<key>-0!sizes
-  // smug() appends &APIKey=..., so include a query string first.
-  let data = null;
-  try {
-    data = await smug(`/image/${encodeURIComponent(k)}-0!sizes?_accept=application/json&_verbosity=1`);
-  } catch (e) {
-    // cache negative result to avoid repeated hits
-    __imgSizeCache.set(k, {});
-    return {};
-  }
-
-  const root = (data && data.Response) ? data.Response : data;
-
-  // Pull any *Url string fields from the sizes response (robust against schema variation)
-  const out = {};
-  const seen = new Set();
-  function visit(obj, depth) {
-    if (!obj || typeof obj !== "object" || depth > 4) return;
-    if (seen.has(obj)) return;
-    seen.add(obj);
-
-    for (const [key, val] of Object.entries(obj)) {
-      if (typeof val === "string" && /Url$/i.test(key) && val) {
-        out[key] = val;
-      } else if (val && typeof val === "object") {
-        visit(val, depth + 1);
-      }
-    }
-  }
-  visit(root, 0);
-
-  __imgSizeCache.set(k, out);
-  return out;
-}
-
-async function mapLimit(arr, limit, fn) {
-  const a = Array.isArray(arr) ? arr : [];
-  const out = new Array(a.length);
-  let i = 0;
-  async function worker() {
-    while (true) {
-      const idx = i++;
-      if (idx >= a.length) return;
-      out[idx] = await fn(a[idx], idx);
-    }
-  }
-  const workers = Array.from({ length: Math.max(1, Math.min(limit, a.length)) }, () => worker());
-  await Promise.all(workers);
-  return out;
-}
-
-// =========================================================
 // SHEETS → CSV
 // =========================================================
 app.get("/sheet/bands", async (req, res) => {
   try {
     const r = await fetch(BANDS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res, req);
+    allowCors(res);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /bands fetch failed:", err);
-    allowCors(res, req);
+    allowCors(res);
     res.status(500).send("sheet error");
   }
 });
 
 app.get("/sheet/shows", async (req, res) => {
   // CORS already applied by global middleware, but keep explicit for clarity
-  allowCors(res, req);
+  allowCors(res);
 
   // If we have a fresh cache (last 10 minutes), serve it immediately.
   const now = Date.now();
@@ -221,7 +134,7 @@ app.get("/sheet/shows", async (req, res) => {
 // IMAGE PROXY (posters)
 // =========================================================
 app.get("/show-poster", async (req, res) => {
-  allowCors(res, req);
+  allowCors(res);
   const remoteUrl = req.query.url;
   if (!remoteUrl) return res.status(400).send("missing url");
 
@@ -253,7 +166,7 @@ app.get("/show-poster", async (req, res) => {
 //  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
 //  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
 app.get("/smug/resolve-album", async (req, res) => {
-  allowCors(res, req);
+  allowCors(res);
 
   const rawUrl = String(req.query.url || "").trim();
   if (!rawUrl) return res.status(400).json({ error: "missing url" });
@@ -474,7 +387,7 @@ app.get("/smug/:slug", async (req, res) => {
     }
   }
 
-  allowCors(res, req);
+  allowCors(res);
 
   if (successData) {
     successData._usedUrl = usedUrl;
@@ -516,49 +429,6 @@ app.get("/smug/album/:albumKey", async (req, res) => {
     }
 
     const data = await upstream.json();
-
-     // Enrich AlbumImage items with full-size URL fields (needed for ZIP downloads)
-     try {
-       const list =
-         (data && data.Response && Array.isArray(data.Response.AlbumImage) && data.Response.AlbumImage) ||
-         (data && data.Response && Array.isArray(data.Response.AlbumImages) && data.Response.AlbumImages) ||
-         [];
-
-       // Only fetch sizes if the listing doesn't already contain an obvious full-size url field.
-       const needs = list.some((it) => {
-         const top = it || {};
-         const img = (it && it.Image) ? it.Image : {};
-         return !(
-           top.OriginalUrl || top.LargestImageUrl || top.X3LargeUrl || top.XLargeUrl || top.LargeUrl ||
-           img.OriginalUrl || img.LargestImageUrl || img.X3LargeUrl || img.XLargeUrl || img.LargeUrl
-         );
-       });
-
-       if (needs && list.length) {
-         await mapLimit(list, 6, async (it) => {
-           const img = (it && it.Image) ? it.Image : {};
-           const imageKey = (img && img.ImageKey) || it.ImageKey || "";
-           if (!imageKey) return it;
-
-           const urls = await getImageSizesUrls(imageKey);
-
-           // Flatten URL fields to BOTH the AlbumImage item and the embedded Image object
-           for (const [k, v] of Object.entries(urls)) {
-             if (v && !it[k]) it[k] = v;
-             if (v && img && !img[k]) img[k] = v;
-           }
-
-           // Keep filename handy for ZIP naming if present
-           if (img && img.FileName && !it.FileName) it.FileName = img.FileName;
-
-           it.Image = img;
-           return it;
-         });
-       }
-     } catch (e) {
-       console.warn("album enrich sizes failed:", e && e.message ? e.message : e);
-     }
-
     res.set("Access-Control-Allow-Origin", "*");
     return res.json(data);
   } catch (err) {
@@ -579,11 +449,11 @@ app.get("/smug/album-meta/:albumKey", async (req, res) => {
       `/album/${encodeURIComponent(albumKey)}?_expand=Keywords&_expand=KeywordArray`
     );
 
-    allowCors(res, req);
+    allowCors(res);
     return res.json(result);
   } catch (err) {
     console.error("Error fetching album metadata:", err);
-    allowCors(res, req);
+    allowCors(res);
     return res.status(500).json({ error: "Failed to fetch album metadata" });
   }
 });
@@ -610,11 +480,11 @@ app.get("/smug/image/:imageKey", async (req, res) => {
 
     const data = await r.json();
 
-    allowCors(res, req);
+    allowCors(res);
     return res.json(data);
   } catch (err) {
     console.error("error fetching image detail:", err);
-    allowCors(res, req);
+    allowCors(res);
     return res.status(500).json({ error: "image detail fetch failed" });
   }
 });
@@ -629,6 +499,9 @@ const PORT = process.env.PORT || 3000;
 // POST /zip { items: [{url, filename}] }
 app.post("/zip", async (req, res) => {
   try {
+    // Ensure ZIP responses include CORS headers (SmugMug-hosted pages call this endpoint)
+    allowCors(res, req);
+
     if (!archiver) {
       return res.status(501).send("ZIP not available (missing dependency: archiver). Run: npm i archiver");
     }
@@ -651,12 +524,29 @@ app.post("/zip", async (req, res) => {
       const filename = String(it?.filename || "photo.jpg").replace(/[\\/]+/g, "_");
 
       try {
-        const r = await fetch(url);
+        const r = await fetch(url, {
+          headers: {
+            // Some CDNs behave better with a UA; also keeps our upstream requests consistent.
+            "User-Agent": "SmugProxy/1.0"
+          }
+        });
         if (!r.ok) {
           console.warn("zip fetch failed", r.status, url);
           continue;
         }
-        archive.append(r.body, { name: filename });
+
+        // node-fetch/undici returns a Web ReadableStream. Archiver expects a Node stream or Buffer.
+        const body = r.body;
+        if (!body) {
+          console.warn("zip fetch missing body", url);
+          continue;
+        }
+
+        const nodeStream = (typeof Readable.fromWeb === "function" && typeof body.getReader === "function")
+          ? Readable.fromWeb(body)
+          : body;
+
+        archive.append(nodeStream, { name: filename });
       } catch (e) {
         console.warn("zip fetch exception", url, e);
       }
