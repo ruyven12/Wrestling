@@ -1,9 +1,13 @@
-console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2-ZIPURLS <<<");
 
 const express = require("express");
 let archiver = null;
 try { archiver = require("archiver"); } catch (e) { /* optional */ }
 const app = express();
+
+// Body parsers (needed for POST /zip)
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ extended: true }));
 
 // Global CORS (so even early errors include headers)
 app.use((req, res, next) => {
@@ -410,7 +414,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
   const url = `https://api.smugmug.com/api/v2/album/${encodeURIComponent(
     albumKey
-  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image`;
+  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image&_verbosity=1`;
 
   console.log("PROXY ALBUM IMAGES:", url);
 
@@ -429,6 +433,48 @@ app.get("/smug/album/:albumKey", async (req, res) => {
     }
 
     const data = await upstream.json();
+
+// Flatten expanded Image fields onto each AlbumImage so the front-end can find URLs like
+// OriginalUrl / LargestImageUrl / LargeUrl / MediumUrl / ThumbnailUrl, etc.
+// This is a surgical compatibility layer for the ZIP downloader which expects these keys at the top level.
+try {
+  const resp = data && data.Response ? data.Response : null;
+  const list = resp && Array.isArray(resp.AlbumImage) ? resp.AlbumImage : null;
+  if (list) {
+    const keysToCopy = [
+      "OriginalUrl",
+      "LargestImageUrl",
+      "X3LargeUrl",
+      "X2LargeUrl",
+      "XLargeUrl",
+      "LargeUrl",
+      "MediumUrl",
+      "SmallUrl",
+      "TinyUrl",
+      "ThumbnailUrl",
+      "ThumbUrl",
+      "ImageUrl",
+      "Url",
+      "FileName"
+    ];
+    for (const ai of list) {
+      const img = ai && ai.Image ? ai.Image : null;
+      if (!img) continue;
+      for (const k of keysToCopy) {
+        if (ai[k]) continue;
+        const v = img[k];
+        if (typeof v === "string" && v.trim()) ai[k] = v.trim();
+      }
+      if (!ai.FileName) {
+        const fn = img.FileName || img.Filename || img.fileName || img.filename;
+        if (typeof fn === "string" && fn.trim()) ai.FileName = fn.trim();
+      }
+    }
+  }
+} catch (e) {
+  console.log("flatten album image urls failed:", e && e.message ? e.message : e);
+}
+
     res.set("Access-Control-Allow-Origin", "*");
     return res.json(data);
   } catch (err) {
