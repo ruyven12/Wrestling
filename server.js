@@ -1,13 +1,12 @@
-console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2-ZIPURLS <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 
 const express = require("express");
 let archiver = null;
 try { archiver = require("archiver"); } catch (e) { /* optional */ }
 const app = express();
 
-// Body parsers (needed for POST /zip)
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true }));
+// Parse JSON bodies (needed for POST /zip)
+app.use(express.json({ limit: "10mb" }));
 
 // Global CORS (so even early errors include headers)
 app.use((req, res, next) => {
@@ -76,6 +75,68 @@ async function smug(endpoint) {
   }
 
   return r.json();
+}
+
+// =========================================================
+// IMAGE SIZES HELPERS (for ZIP downloads)
+// SmugMug album image listings often don't include full-size URLs.
+// We fetch sizes per ImageKey and cache them in-memory.
+// =========================================================
+const __imgSizeCache = new Map(); // imageKey -> { ...Url fields }
+async function getImageSizesUrls(imageKey) {
+  const k = String(imageKey || "").trim();
+  if (!k) return {};
+  if (__imgSizeCache.has(k)) return __imgSizeCache.get(k);
+
+  // Smug: /image/<key>-0!sizes
+  // smug() appends &APIKey=..., so include a query string first.
+  let data = null;
+  try {
+    data = await smug(`/image/${encodeURIComponent(k)}-0!sizes?_accept=application/json&_verbosity=1`);
+  } catch (e) {
+    // cache negative result to avoid repeated hits
+    __imgSizeCache.set(k, {});
+    return {};
+  }
+
+  const root = (data && data.Response) ? data.Response : data;
+
+  // Pull any *Url string fields from the sizes response (robust against schema variation)
+  const out = {};
+  const seen = new Set();
+  function visit(obj, depth) {
+    if (!obj || typeof obj !== "object" || depth > 4) return;
+    if (seen.has(obj)) return;
+    seen.add(obj);
+
+    for (const [key, val] of Object.entries(obj)) {
+      if (typeof val === "string" && /Url$/i.test(key) && val) {
+        out[key] = val;
+      } else if (val && typeof val === "object") {
+        visit(val, depth + 1);
+      }
+    }
+  }
+  visit(root, 0);
+
+  __imgSizeCache.set(k, out);
+  return out;
+}
+
+async function mapLimit(arr, limit, fn) {
+  const a = Array.isArray(arr) ? arr : [];
+  const out = new Array(a.length);
+  let i = 0;
+  async function worker() {
+    while (true) {
+      const idx = i++;
+      if (idx >= a.length) return;
+      out[idx] = await fn(a[idx], idx);
+    }
+  }
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, a.length)) }, () => worker());
+  await Promise.all(workers);
+  return out;
 }
 
 // =========================================================
@@ -414,7 +475,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
   const url = `https://api.smugmug.com/api/v2/album/${encodeURIComponent(
     albumKey
-  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image&_verbosity=1`;
+  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image`;
 
   console.log("PROXY ALBUM IMAGES:", url);
 
@@ -434,46 +495,47 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
     const data = await upstream.json();
 
-// Flatten expanded Image fields onto each AlbumImage so the front-end can find URLs like
-// OriginalUrl / LargestImageUrl / LargeUrl / MediumUrl / ThumbnailUrl, etc.
-// This is a surgical compatibility layer for the ZIP downloader which expects these keys at the top level.
-try {
-  const resp = data && data.Response ? data.Response : null;
-  const list = resp && Array.isArray(resp.AlbumImage) ? resp.AlbumImage : null;
-  if (list) {
-    const keysToCopy = [
-      "OriginalUrl",
-      "LargestImageUrl",
-      "X3LargeUrl",
-      "X2LargeUrl",
-      "XLargeUrl",
-      "LargeUrl",
-      "MediumUrl",
-      "SmallUrl",
-      "TinyUrl",
-      "ThumbnailUrl",
-      "ThumbUrl",
-      "ImageUrl",
-      "Url",
-      "FileName"
-    ];
-    for (const ai of list) {
-      const img = ai && ai.Image ? ai.Image : null;
-      if (!img) continue;
-      for (const k of keysToCopy) {
-        if (ai[k]) continue;
-        const v = img[k];
-        if (typeof v === "string" && v.trim()) ai[k] = v.trim();
-      }
-      if (!ai.FileName) {
-        const fn = img.FileName || img.Filename || img.fileName || img.filename;
-        if (typeof fn === "string" && fn.trim()) ai.FileName = fn.trim();
-      }
-    }
-  }
-} catch (e) {
-  console.log("flatten album image urls failed:", e && e.message ? e.message : e);
-}
+     // Enrich AlbumImage items with full-size URL fields (needed for ZIP downloads)
+     try {
+       const list =
+         (data && data.Response && Array.isArray(data.Response.AlbumImage) && data.Response.AlbumImage) ||
+         (data && data.Response && Array.isArray(data.Response.AlbumImages) && data.Response.AlbumImages) ||
+         [];
+
+       // Only fetch sizes if the listing doesn't already contain an obvious full-size url field.
+       const needs = list.some((it) => {
+         const top = it || {};
+         const img = (it && it.Image) ? it.Image : {};
+         return !(
+           top.OriginalUrl || top.LargestImageUrl || top.X3LargeUrl || top.XLargeUrl || top.LargeUrl ||
+           img.OriginalUrl || img.LargestImageUrl || img.X3LargeUrl || img.XLargeUrl || img.LargeUrl
+         );
+       });
+
+       if (needs && list.length) {
+         await mapLimit(list, 6, async (it) => {
+           const img = (it && it.Image) ? it.Image : {};
+           const imageKey = (img && img.ImageKey) || it.ImageKey || "";
+           if (!imageKey) return it;
+
+           const urls = await getImageSizesUrls(imageKey);
+
+           // Flatten URL fields to BOTH the AlbumImage item and the embedded Image object
+           for (const [k, v] of Object.entries(urls)) {
+             if (v && !it[k]) it[k] = v;
+             if (v && img && !img[k]) img[k] = v;
+           }
+
+           // Keep filename handy for ZIP naming if present
+           if (img && img.FileName && !it.FileName) it.FileName = img.FileName;
+
+           it.Image = img;
+           return it;
+         });
+       }
+     } catch (e) {
+       console.warn("album enrich sizes failed:", e && e.message ? e.message : e);
+     }
 
     res.set("Access-Control-Allow-Origin", "*");
     return res.json(data);
