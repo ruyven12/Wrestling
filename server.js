@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // Global CORS (so even early errors include headers)
 app.use((req, res, next) => {
-  allowCors(res);
+  allowCors(res, req);
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
@@ -31,8 +31,29 @@ const SHOWS_SHEET_URL =
 // =========================================================
 // UNIVERSAL CORS
 // =========================================================
-function allowCors(res) {
-  res.set("Access-Control-Allow-Origin", "*");
+function allowCors(res, req) {
+  // Allow SmugMug-hosted pages to call this API (ZIP POST requires preflight)
+  const origin = req && req.headers ? String(req.headers.origin || "") : "";
+  const allowList = new Set([
+    "https://vmpix.smugmug.com",
+    "https://www.vmpix.smugmug.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
+  ]);
+
+  // Use explicit origin when possible (keeps browsers happy with preflight), otherwise fall back to "*"
+  if (origin && allowList.has(origin)) {
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Vary", "Origin");
+  } else {
+    res.set("Access-Control-Allow-Origin", "*");
+  }
+
+  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.set("Access-Control-Max-Age", "86400");
 }
 
 
@@ -146,18 +167,18 @@ app.get("/sheet/bands", async (req, res) => {
   try {
     const r = await fetch(BANDS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res);
+    allowCors(res, req);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /bands fetch failed:", err);
-    allowCors(res);
+    allowCors(res, req);
     res.status(500).send("sheet error");
   }
 });
 
 app.get("/sheet/shows", async (req, res) => {
   // CORS already applied by global middleware, but keep explicit for clarity
-  allowCors(res);
+  allowCors(res, req);
 
   // If we have a fresh cache (last 10 minutes), serve it immediately.
   const now = Date.now();
@@ -199,7 +220,7 @@ app.get("/sheet/shows", async (req, res) => {
 // IMAGE PROXY (posters)
 // =========================================================
 app.get("/show-poster", async (req, res) => {
-  allowCors(res);
+  allowCors(res, req);
   const remoteUrl = req.query.url;
   if (!remoteUrl) return res.status(400).send("missing url");
 
@@ -231,7 +252,7 @@ app.get("/show-poster", async (req, res) => {
 //  1) Follow redirects and if final URL is a photo page, extract ImageKey and resolve → AlbumKey via Smug API
 //  2) Otherwise, treat last path segment as album-ish leaf and try to find a matching album under parent folder.
 app.get("/smug/resolve-album", async (req, res) => {
-  allowCors(res);
+  allowCors(res, req);
 
   const rawUrl = String(req.query.url || "").trim();
   if (!rawUrl) return res.status(400).json({ error: "missing url" });
@@ -452,7 +473,7 @@ app.get("/smug/:slug", async (req, res) => {
     }
   }
 
-  allowCors(res);
+  allowCors(res, req);
 
   if (successData) {
     successData._usedUrl = usedUrl;
@@ -475,7 +496,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
   const url = `https://api.smugmug.com/api/v2/album/${encodeURIComponent(
     albumKey
-  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_verbosity=1&_expand=Image`;
+  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image`;
 
   console.log("PROXY ALBUM IMAGES:", url);
 
@@ -515,14 +536,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
        if (needs && list.length) {
          await mapLimit(list, 6, async (it) => {
            const img = (it && it.Image) ? it.Image : {};
-           const imageKey = (function(){
-             const k1 = (img && img.ImageKey) || it.ImageKey;
-             if (k1) return String(k1).trim();
-             // Sometimes ImageKey isn't included; try parsing from Image.Uri (/api/v2/image/<key>-0)
-             const uri = (img && img.Uri) ? String(img.Uri) : "";
-             const m = uri.match(/\/image\/([A-Za-z0-9]+)-/i);
-             return m && m[1] ? m[1] : "";
-           })();
+           const imageKey = (img && img.ImageKey) || it.ImageKey || "";
            if (!imageKey) return it;
 
            const urls = await getImageSizesUrls(imageKey);
@@ -564,11 +578,11 @@ app.get("/smug/album-meta/:albumKey", async (req, res) => {
       `/album/${encodeURIComponent(albumKey)}?_expand=Keywords&_expand=KeywordArray`
     );
 
-    allowCors(res);
+    allowCors(res, req);
     return res.json(result);
   } catch (err) {
     console.error("Error fetching album metadata:", err);
-    allowCors(res);
+    allowCors(res, req);
     return res.status(500).json({ error: "Failed to fetch album metadata" });
   }
 });
@@ -595,11 +609,11 @@ app.get("/smug/image/:imageKey", async (req, res) => {
 
     const data = await r.json();
 
-    allowCors(res);
+    allowCors(res, req);
     return res.json(data);
   } catch (err) {
     console.error("error fetching image detail:", err);
-    allowCors(res);
+    allowCors(res, req);
     return res.status(500).json({ error: "image detail fetch failed" });
   }
 });
