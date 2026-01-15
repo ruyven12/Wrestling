@@ -1,18 +1,19 @@
 console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 
 const express = require("express");
+const { Readable } = require("stream");
 let archiver = null;
 try { archiver = require("archiver"); } catch (e) { /* optional */ }
 const app = express();
 
 // Global CORS (so even early errors include headers)
 app.use((req, res, next) => {
-  allowCors(res);
+  allowCors(res, req);
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
 
-
+app.use(express.json({ limit: "10mb" }));
 app.use(express.static(__dirname));
 
 // SmugMug API Key
@@ -28,8 +29,18 @@ const SHOWS_SHEET_URL =
 // =========================================================
 // UNIVERSAL CORS
 // =========================================================
-function allowCors(res) {
-  res.set("Access-Control-Allow-Origin", "*");
+function allowCors(res, req) {
+  const origin = req && req.headers ? String(req.headers.origin || "") : "";
+  // SmugMug-hosted pages call this API from https://vmpix.smugmug.com
+  if (origin && /^https:\/\/vmpix\.smugmug\.com$/i.test(origin)) {
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Vary", "Origin");
+  } else {
+    res.set("Access-Control-Allow-Origin", "*");
+  }
+  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.set("Access-Control-Max-Age", "86400");
 }
 
 
@@ -73,6 +84,66 @@ async function smug(endpoint) {
 
   return r.json();
 }
+// =========================================================
+// IMAGE SIZES CACHE (for ZIP downloads)
+// =========================================================
+const __imgSizeCache = new Map(); // imageKey -> { ts:number, urls:object }
+const __IMG_SIZE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function extractImageKeyFromUri(uri) {
+  const m = String(uri || "").match(/\/image\/([A-Za-z0-9]+)-0/i);
+  return m && m[1] ? m[1] : "";
+}
+
+async function getImageSizesUrls(imageKey) {
+  const key = String(imageKey || "").trim();
+  if (!key) return {};
+  const now = Date.now();
+  const cached = __imgSizeCache.get(key);
+  if (cached && now - cached.ts < __IMG_SIZE_TTL_MS) return cached.urls;
+
+  try {
+    // SmugMug ImageSizes endpoint
+    const sizesData = await smug(
+      `/image/${encodeURIComponent(key)}-0!sizes?_accept=application/json&_verbosity=1`
+    );
+
+    const sz =
+      (sizesData && sizesData.Response && (sizesData.Response.ImageSizes || sizesData.Response.ImageSize)) ||
+      sizesData?.Response ||
+      {};
+
+    // Pull any *Url fields we can find (SmugMug commonly returns these)
+    const urls = {};
+    for (const k of Object.keys(sz || {})) {
+      if (/Url$/i.test(k) && typeof sz[k] === "string" && sz[k]) {
+        urls[k] = sz[k];
+      }
+    }
+
+    __imgSizeCache.set(key, { ts: now, urls });
+    return urls;
+  } catch (e) {
+    // Cache negative result briefly to avoid hammering
+    __imgSizeCache.set(key, { ts: now, urls: {} });
+    return {};
+  }
+}
+
+async function mapWithConcurrency(items, limit, worker) {
+  const out = new Array(items.length);
+  let idx = 0;
+  const runners = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+    while (true) {
+      const i = idx++;
+      if (i >= items.length) break;
+      out[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
 
 // =========================================================
 // SHEETS → CSV
@@ -410,7 +481,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
   const url = `https://api.smugmug.com/api/v2/album/${encodeURIComponent(
     albumKey
-  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_expand=Image`;
+  )}!images?APIKey=${SMUG_API_KEY}&count=${count}&start=${start}&_accept=application/json&_verbosity=1&_expand=Image`;
 
   console.log("PROXY ALBUM IMAGES:", url);
 
@@ -424,16 +495,39 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 
     if (!upstream.ok) {
       console.error("upstream album error:", upstream.status, await upstream.text());
-      res.set("Access-Control-Allow-Origin", "*");
+      allowCors(res, req);
       return res.status(upstream.status).json({ error: "album images upstream error" });
     }
 
-    const data = await upstream.json();
-    res.set("Access-Control-Allow-Origin", "*");
-    return res.json(data);
+const data = await upstream.json();
+
+// Enrich AlbumImage entries with downloadable URLs (Original/Largest/etc.)
+// so the front-end ZIP builder can always find a usable URL.
+try {
+  const list = data && data.Response && Array.isArray(data.Response.AlbumImage) ? data.Response.AlbumImage : [];
+  await mapWithConcurrency(list, 6, async (it) => {
+    const img = it && it.Image ? it.Image : {};
+    const imageKey = (img && img.ImageKey) || it.ImageKey || extractImageKeyFromUri(img && img.Uri) || "";
+    if (!imageKey) return;
+    const urls = await getImageSizesUrls(imageKey);
+
+    // Flatten onto both AlbumImage and Image for maximum compatibility
+    if (urls && typeof urls === "object") {
+      Object.assign(it, urls);
+      if (img && typeof img === "object") Object.assign(img, urls);
+    }
+  });
+} catch (e) {
+  // If enrichment fails, still return base payload for UI thumbnails.
+  console.warn("album enrichment skipped:", e && e.message ? e.message : e);
+}
+
+res.set("Access-Control-Allow-Origin", "*");
+return res.json(data);
+
   } catch (err) {
     console.error("album images proxy error:", err);
-    res.set("Access-Control-Allow-Origin", "*");
+    allowCors(res, req);
     return res.status(500).json({ error: "album images proxy failed" });
   }
 });
