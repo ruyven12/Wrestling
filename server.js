@@ -180,141 +180,181 @@ app.get("/show-poster", async (req, res) => {
 // =========================================================
 
 // =========================================================
-// ✔ NEW: RESOLVE A SMUGMUG ALBUM URL → AlbumKey (Wrestling)
-// IMPORTANT: This MUST be defined BEFORE /smug/:slug because otherwise
-// /smug/resolve-album gets treated as a band slug and returns Album:[]
+// ✔ NEW: ALBUM KEYWORD SEARCH (Wrestling)
+// Frontend calls: GET /smug/albums-by-keyword?keyword=<name>
+// IMPORTANT: This MUST be defined BEFORE /smug/:slug for routing.
 // =========================================================
-function extractAlbumKeyFromUri(uri) {
-  const s = String(uri || "");
-  // Examples:
-  //  /api/v2/album/AbCdEf
-  //  https://api.smugmug.com/api/v2/album/AbCdEf
-  const m = s.match(/\/album\/([^/?#]+)/i);
-  return m ? String(m[1]).trim() : "";
-}
 
-async function resolveAlbumKeyViaNodeUrlPath(urlString) {
-  const u = new URL(urlString);
-  const urlPath = u.pathname || "";
-  if (!urlPath || urlPath === "/") return { albumKey: "", nodeKey: "", finalUrl: u.toString() };
+// Fetch JSON from a SmugMug API path like "/api/v2/folder/user/vmpix/Wrestling!albums?count=200&start=1"
+async function smugAbs(apiPathWithQuery) {
+  const p = String(apiPathWithQuery || "").trim();
+  if (!p) throw new Error("missing api path");
 
-  // SmugMug supports resolving a Node by UrlPath.
-  // If this UrlPath is an Album node, it typically includes an AlbumUri.
-  const data = await smug(`/node?UrlPath=${encodeURIComponent(urlPath)}&_verbosity=1`);
+  // Ensure we have a leading slash
+  const pathPart = p.startsWith("/") ? p : ("/" + p);
 
-  const resp = (data && data.Response) || {};
-  const node = (Array.isArray(resp.Node) && resp.Node[0]) ? resp.Node[0] : resp.Node;
+  // Append APIKey correctly depending on whether the URL already has a "?"
+  const joiner = pathPart.includes("?") ? "&" : "?";
+  const fullUrl = `https://api.smugmug.com${pathPart}${joiner}APIKey=${SMUG_API_KEY}`;
 
-  let nodeKey = "";
-  let albumKey = "";
-
-  if (node && typeof node === "object") {
-    if (typeof node.NodeKey === "string") nodeKey = node.NodeKey.trim();
-    if (typeof node.AlbumKey === "string") albumKey = node.AlbumKey.trim();
-    if (!albumKey && typeof node.AlbumUri === "string") albumKey = extractAlbumKeyFromUri(node.AlbumUri);
-
-    // Some responses nest Uris
-    if (!albumKey && node.Uris && typeof node.Uris === "object") {
-      const maybeAlbumUri = node.Uris.Album || node.Uris.album || node.Uris.AlbumUri;
-      if (typeof maybeAlbumUri === "string") albumKey = extractAlbumKeyFromUri(maybeAlbumUri);
-    }
-
-    // Sometimes the node itself is an album and its Uri contains /album/<key>
-    if (!albumKey && typeof node.Uri === "string") albumKey = extractAlbumKeyFromUri(node.Uri);
-  }
-
-  return { albumKey, nodeKey, finalUrl: u.toString(), urlPath };
-}
-
-async function resolveAlbumKeyViaHtmlScrape(urlString) {
-  // Fallback: fetch the SmugMug page HTML and scrape AlbumKey.
-  const r = await fetch(urlString, {
+  const r = await fetch(fullUrl, {
     headers: {
-      "User-Agent": "SmugProxy/1.0",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      Accept: "application/json",
+      "User-Agent": "SmugProxy/1.0"
     }
   });
-  const html = await r.text();
 
-  // Common patterns seen in SmugMug pages.
-  const m1 = html.match(/"AlbumKey"\s*:\s*"([A-Za-z0-9]+)"/);
-  if (m1 && m1[1]) return String(m1[1]).trim();
-  const m2 = html.match(/AlbumKey"\s*"\s*:\s*"([A-Za-z0-9]+)"/);
-  if (m2 && m2[1]) return String(m2[1]).trim();
-  const m3 = html.match(/albumKey\s*[:=]\s*"([A-Za-z0-9]+)"/i);
-  if (m3 && m3[1]) return String(m3[1]).trim();
-  return "";
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`SmugMug upstream returned ${r.status}: ${t.slice(0, 180)}`);
+  }
+  return r.json();
 }
 
-app.get("/smug/resolve-album", async (req, res) => {
+// Best-effort: normalize Keywords into an array of lowercased tokens
+function normalizeKeywordList(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v.map(x => String(x || "").trim()).filter(Boolean);
+
+  const s = String(v || "").trim();
+  if (!s) return [];
+  // SmugMug often stores Keywords as a semicolon-delimited string
+  return s.split(/[;,]/g).map(x => String(x || "").trim()).filter(Boolean);
+}
+
+// Crawl all albums under /Wrestling (folder tree) and return those whose album keywords contain the keyword.
+// This is intentionally capped to avoid heavy load in Render sleep/wake situations.
+app.get("/smug/albums-by-keyword", async (req, res) => {
   allowCors(res, req);
-  const input = String(req.query.url || "").trim();
-  if (!input) return res.status(400).json({ error: "missing url" });
 
-  let albumKey = "";
-  let nodeKey = "";
-  let finalUrl = input;
-  let urlPath = "";
+  const keywordRaw = String(req.query.keyword || req.query.kw || req.query.q || "").trim();
+  if (!keywordRaw) return res.status(400).json({ error: "missing keyword" });
 
-  try {
-    // Try API resolve first (fast + clean).
-    const out = await resolveAlbumKeyViaNodeUrlPath(input);
-    albumKey = out.albumKey || "";
-    nodeKey = out.nodeKey || "";
-    finalUrl = out.finalUrl || input;
-    urlPath = out.urlPath || "";
-  } catch (e) {
-    console.log("resolve-album via node failed:", e && e.message ? e.message : e);
+  const keywordNeedle = keywordRaw.toLowerCase();
+
+  // Safety caps (keep server responsive)
+  const MAX_FOLDERS = Number(req.query.maxFolders || 220) || 220;
+  const MAX_ALBUMS_TO_CHECK = Number(req.query.maxAlbums || 600) || 600;
+  const MAX_RESULTS = Number(req.query.maxResults || 60) || 60;
+
+  // Root wrestling folder path (public)
+  const ROOT_FOLDER_API = "/api/v2/folder/user/vmpix/Wrestling";
+
+  const foldersQueue = [ROOT_FOLDER_API];
+  const seenFolders = new Set();
+  const matched = [];
+
+  // Small in-request cache for album meta so we don't refetch the same album twice
+  const metaCache = new Map();
+
+  function safeWebUrlFromAlbum(album) {
+    // Album.WebUri is usually a URI path like "/api/v2/album/AbCdEf" (API),
+    // but Album.UrlPath is commonly present as a site path. We'll attempt UrlPath first.
+    const urlPath = (album && (album.UrlPath || album.urlPath || album.urlpath)) ? String(album.UrlPath || album.urlPath || album.urlpath).trim() : "";
+    if (urlPath) return "https://vmpix.smugmug.com" + (urlPath.startsWith("/") ? urlPath : ("/" + urlPath));
+
+    // Some payloads include a fully-qualified URL or "Uri" forms. Best-effort only.
+    const web = (album && (album.WebUri || album.webUri || album.Permalink || album.Url || album.url)) ? String(album.WebUri || album.webUri || album.Permalink || album.Url || album.url).trim() : "";
+    if (web && /^https?:\/\//i.test(web)) return web;
+
+    return "";
   }
 
   try {
-    // Fallback for edge cases.
-    if (!albumKey) albumKey = await resolveAlbumKeyViaHtmlScrape(input);
-  } catch (e) {
-    console.log("resolve-album via html failed:", e && e.message ? e.message : e);
+    let albumsChecked = 0;
+
+    while (foldersQueue.length && seenFolders.size < MAX_FOLDERS && albumsChecked < MAX_ALBUMS_TO_CHECK && matched.length < MAX_RESULTS) {
+      const folderApi = foldersQueue.shift();
+      if (!folderApi) continue;
+      if (seenFolders.has(folderApi)) continue;
+      seenFolders.add(folderApi);
+
+      // 1) Pull albums in this folder
+      let start = 1;
+      let more = true;
+
+      while (more && albumsChecked < MAX_ALBUMS_TO_CHECK && matched.length < MAX_RESULTS) {
+        const data = await smugAbs(`${folderApi}!albums?count=200&start=${start}`);
+        const resp = (data && data.Response) || {};
+        const albums = Array.isArray(resp.Album) ? resp.Album : (resp.Album ? [resp.Album] : []);
+
+        if (!albums.length) {
+          more = false;
+        } else {
+          for (let i = 0; i < albums.length && albumsChecked < MAX_ALBUMS_TO_CHECK && matched.length < MAX_RESULTS; i++) {
+            const a = albums[i] || {};
+            const albumKey = String(a.AlbumKey || a.Key || "").trim();
+            if (!albumKey) continue;
+
+            albumsChecked++;
+
+            // Fetch keywords (album listing doesn't reliably include them)
+            let kwList = metaCache.get(albumKey);
+            if (!kwList) {
+              try {
+                const meta = await smug(`/album/${encodeURIComponent(albumKey)}?_expand=Keywords&_expand=KeywordArray`);
+                const albumObj = meta && meta.Response && meta.Response.Album ? meta.Response.Album : null;
+                const rawKw =
+                  (albumObj && albumObj.Keywords) ? albumObj.Keywords :
+                  (albumObj && albumObj.Keyword) ? albumObj.Keyword :
+                  (albumObj && albumObj.KeywordArray) ? albumObj.KeywordArray :
+                  "";
+                kwList = normalizeKeywordList(rawKw).map(x => x.toLowerCase());
+                metaCache.set(albumKey, kwList);
+              } catch (e) {
+                // fail-soft per album
+                kwList = [];
+                metaCache.set(albumKey, kwList);
+              }
+            }
+
+            if (kwList && kwList.some(k => k === keywordNeedle || k.indexOf(keywordNeedle) !== -1)) {
+              matched.push({
+                title: String(a.Title || a.Name || "").trim(),
+                albumKey,
+                url: safeWebUrlFromAlbum(a),
+                // thumb: best-effort if present
+                thumb: String(a.ThumbnailUrl || a.ThumbUrl || "").trim()
+              });
+            }
+          }
+
+          // paging
+          const pages = resp.Pages || {};
+          const total = Number(pages.Total) || 0;
+          const count = Number(pages.Count) || 200;
+          const gotSoFar = (start - 1) + albums.length;
+
+          if (!total || gotSoFar >= total || albums.length === 0) more = false;
+          else start += count;
+        }
+      }
+
+      // 2) Pull subfolders
+      try {
+        const fdata = await smugAbs(`${folderApi}!folders?count=200&start=1`);
+        const fresp = (fdata && fdata.Response) || {};
+        const subs = Array.isArray(fresp.Folder) ? fresp.Folder : (fresp.Folder ? [fresp.Folder] : []);
+        for (let j = 0; j < subs.length && foldersQueue.length < MAX_FOLDERS; j++) {
+          const f = subs[j] || {};
+          const uri = String(f.Uri || "").trim(); // expected like "/api/v2/folder/user/vmpix/Wrestling/Limitless"
+          if (uri && uri.indexOf("/api/v2/folder/") === 0 && !seenFolders.has(uri)) foldersQueue.push(uri);
+        }
+      } catch (_) {
+        // ignore folder enumeration errors
+      }
+    }
+
+    return res.json({
+      keyword: keywordRaw,
+      albums: matched,
+      checked: { folders: seenFolders.size, albums: matched.length ? undefined : undefined },
+      info: matched.length ? "" : `No albums found for keyword=${keywordRaw}`
+    });
+  } catch (err) {
+    console.error("albums-by-keyword failed:", err);
+    return res.status(500).json({ error: "albums-by-keyword failed" });
   }
-
-  return res.json({
-    albumKey: albumKey || "",
-    AlbumKey: albumKey || "",
-    nodeKey: nodeKey || "",
-    finalUrl,
-    urlPath
-  });
-});
-
-// Resolve shop node info as well (frontend calls this first)
-app.get("/smug/resolve-shop-node", async (req, res) => {
-  allowCors(res, req);
-  const input = String(req.query.url || "").trim();
-  if (!input) return res.status(400).json({ error: "missing url" });
-
-  let albumKey = "";
-  let nodeKey = "";
-  let finalUrl = input;
-  let urlPath = "";
-
-  try {
-    const out = await resolveAlbumKeyViaNodeUrlPath(input);
-    albumKey = out.albumKey || "";
-    nodeKey = out.nodeKey || "";
-    finalUrl = out.finalUrl || input;
-    urlPath = out.urlPath || "";
-  } catch (e) {
-    console.log("resolve-shop-node via node failed:", e && e.message ? e.message : e);
-  }
-
-  try {
-    if (!albumKey) albumKey = await resolveAlbumKeyViaHtmlScrape(input);
-  } catch (_) {}
-
-  return res.json({
-    nodeKey: nodeKey || "",
-    albumKey: albumKey || "",
-    AlbumKey: albumKey || "",
-    finalUrl,
-    urlPath
-  });
 });
 
 app.get("/smug/:slug", async (req, res) => {
