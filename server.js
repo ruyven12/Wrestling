@@ -69,9 +69,7 @@ async function fetchTextWithTimeout(url, ms) {
 // ✔ FIXED: SmugMug API helper (must be ABOVE all routes)
 // =========================================================
 async function smug(endpoint) {
-  // endpoint may or may not already include a query string. Ensure APIKey is appended safely.
-  const joiner = String(endpoint || "").includes("?") ? "&" : "?";
-  const url = `https://api.smugmug.com/api/v2${endpoint}${joiner}APIKey=${SMUG_API_KEY}`;
+  const url = `https://api.smugmug.com/api/v2${endpoint}&APIKey=${SMUG_API_KEY}`;
 
   const r = await fetch(url, {
     headers: {
@@ -86,388 +84,6 @@ async function smug(endpoint) {
 
   return r.json();
 }
-
-// =========================================================
-// ✔ NEW: KEYWORD → ALBUMS (used by Wrestling keyword search modal)
-// =========================================================
-// GET  /smug/albums-by-keyword?keyword=<kw>
-// POST /smug/albums-by-keyword { keyword: "<kw>" }
-// Returns: { albums: [{ title, date, url, thumb, albumKey }] }
-const __kwCache = {
-  // normalized keyword -> { ts:number, albums:[] }
-  byKw: new Map(),
-  // url -> { ts:number, albumKey:string }
-  urlToAlbumKey: new Map(),
-  // albumKeyLower -> { ts:number, album:object, kwSet:Set<string> }
-  albumMeta: new Map(),
-  // parsed shows rows cache (to avoid re-parsing CSV repeatedly)
-  showsRows: null,
-  showsRowsTs: 0,
-};
-
-function _normKw(s) {
-  return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function parseCsvLine(line) {
-  const out = [];
-  let cur = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === "," && !inQuotes) {
-      out.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
-  }
-  out.push(cur);
-  return out;
-}
-
-async function ensureShowsRows() {
-  const now = Date.now();
-  if (__kwCache.showsRows && now - __kwCache.showsRowsTs < 10 * 60 * 1000) {
-    return __kwCache.showsRows;
-  }
-
-  // Prefer the already-cached CSV from /sheet/shows
-  let csv = __cache.showsCsv;
-  if (!csv || !String(csv).trim()) {
-    const out = await fetchTextWithTimeout(SHOWS_SHEET_URL, 8000);
-    if (!out.ok) throw new Error(`shows csv fetch failed (${out.status})`);
-    csv = out.text;
-    __cache.showsCsv = csv;
-    __cache.showsFetchedAt = now;
-  }
-
-  const text = String(csv || "");
-  const lines = text.split(/\r?\n/).filter((l) => String(l || "").trim());
-  if (!lines.length) {
-    __kwCache.showsRows = [];
-    __kwCache.showsRowsTs = now;
-    return [];
-  }
-
-  const header = parseCsvLine(lines.shift()).map((h) => String(h || "").trim());
-  const headerLower = header.map((h) => h.toLowerCase());
-
-  const rows = [];
-  for (const line of lines) {
-    const cols = parseCsvLine(line);
-    const row = {};
-    for (let i = 0; i < header.length; i++) {
-      row[headerLower[i]] = String(cols[i] || "").trim();
-    }
-    row.show_date = row.show_date || row.date || "";
-    rows.push(row);
-  }
-
-  __kwCache.showsRows = rows;
-  __kwCache.showsRowsTs = now;
-  return rows;
-}
-
-function pickFirst(obj, keys) {
-  for (const k of keys) {
-    if (!k) continue;
-    if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
-    const v = obj[k];
-    if (v !== undefined && v !== null && String(v).trim() !== "") return String(v).trim();
-  }
-  return "";
-}
-
-function getMatchField(obj, i, field) {
-  const n = Number(i);
-  const dash = `match-${n}`;
-  const under = `match_${n}`;
-  const legacy = `part_${n}`;
-  const suffixes = [`_${field}`, `-${field}`];
-  const keys = [];
-  for (const suf of suffixes) {
-    keys.push(`${dash}${suf}`);
-    keys.push(`${under}${suf}`);
-  }
-  keys.push(`${legacy}_${field}`);
-  return pickFirst(obj, keys);
-}
-
-const SMUG_ORIGIN = "https://vmpix.smugmug.com";
-
-function resolveMatchUrl(urlCell, showRow) {
-  const raw = String(urlCell || "").trim();
-  if (!raw) return "";
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.startsWith("/")) return SMUG_ORIGIN.replace(/\/$/, "") + raw;
-
-  function inferShowBaseUrl(r) {
-    const base = String((r && (r.show_url || r.showurl || r.show)) || "").trim();
-    if (base) return base;
-
-    const rawDate = String((r && (r.show_date || r.date)) || "").trim();
-    const mmddyy = (function () {
-      if (!rawDate) return "";
-      const m1 = rawDate.match(/^\s*(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})\s*$/);
-      if (m1) {
-        const mm = String(m1[1]).padStart(2, "0");
-        const dd = String(m1[2]).padStart(2, "0");
-        let yy = String(m1[3]);
-        if (yy.length === 4) yy = yy.slice(2);
-        return mm + dd + yy;
-      }
-      const m2 = rawDate.match(/^\s*(\d{4})-(\d{2})-(\d{2})\s*$/);
-      if (m2) {
-        const yy = m2[1].slice(2);
-        return m2[2] + m2[3] + yy;
-      }
-      return "";
-    })();
-
-    if (mmddyy) return SMUG_ORIGIN.replace(/\/$/, "") + "/Wrestling/Limitless/" + mmddyy;
-
-    const poster = String((r && (r.show_poster || r.poster_url)) || "").trim();
-    if (!poster) return "";
-    try {
-      const u = new URL(poster);
-      const parts = String(u.pathname || "").split("/").filter(Boolean);
-      for (let i = 0; i < parts.length - 2; i++) {
-        if (String(parts[i]).toLowerCase() === "wrestling" && /^\d{6}$/.test(parts[i + 2])) {
-          return SMUG_ORIGIN.replace(/\/$/, "") + "/" + parts.slice(i, i + 3).join("/");
-        }
-      }
-    } catch (_) {}
-    return "";
-  }
-
-  const base2 = inferShowBaseUrl(showRow);
-  if (base2) return base2.replace(/\/$/, "") + "/" + raw.replace(/^\//, "");
-  return raw;
-}
-
-async function resolveAlbumKeyFromUrlFast(albumUrl) {
-  const rawUrl = String(albumUrl || "").trim();
-  if (!rawUrl) return "";
-
-  const now = Date.now();
-  const cached = __kwCache.urlToAlbumKey.get(rawUrl);
-  if (cached && now - cached.ts < 6 * 60 * 60 * 1000) return String(cached.albumKey || "");
-
-  let urlObj = null;
-  try { urlObj = new URL(rawUrl); } catch (_) {}
-  if (!urlObj) return "";
-
-  const parts = String(urlObj.pathname || "").split("/").filter(Boolean);
-  if (parts.length < 2) return "";
-
-  function norm(s) {
-    return String(s || "")
-      .trim()
-      .toLowerCase()
-      .replace(/%20/g, " ")
-      .replace(/[+]/g, " ")
-      .replace(/[_]/g, "-")
-      .replace(/\s+/g, " ");
-  }
-  function normDash(s) {
-    return norm(s).replace(/\s+/g, "-");
-  }
-
-  const leaf = parts[parts.length - 1];
-  const parentParts = parts.slice(0, parts.length - 1);
-  const parentCandidates = [];
-  for (let cut = parentParts.length; cut >= Math.max(1, parentParts.length - 2); cut--) {
-    parentCandidates.push(parentParts.slice(0, cut));
-  }
-
-  const leafNorm = norm(leaf);
-  const leafDash = normDash(leaf);
-
-  // IMPORTANT: SmugMug folder paths must be URL-encoded per path segment.
-  // Some folder names can contain spaces/punctuation; encode each segment to avoid upstream errors.
-  function encodeFolderPath(partsArr) {
-    return partsArr
-      .map((p) => {
-        try {
-          return encodeURIComponent(decodeURIComponent(String(p || "")));
-        } catch (_) {
-          return encodeURIComponent(String(p || ""));
-        }
-      })
-      .join("/");
-  }
-
-  for (const parent of parentCandidates) {
-    const folderPathEnc = encodeFolderPath(parent);
-    const apiPath = `/folder/user/vmpix/${folderPathEnc}!albums?_accept=application/json`;
-    try {
-      const data = await smug(apiPath);
-      const albums = (data && data.Response && Array.isArray(data.Response.Album)) ? data.Response.Album : [];
-      for (const a of albums) {
-        const key = String(a.AlbumKey || a.Key || "").trim();
-        if (!key) continue;
-        const urlName = norm(a.UrlName || a.Urlname || "");
-        const name = norm(a.Name || "");
-        const title = norm(a.Title || "");
-
-        if (urlName === leafNorm || urlName === leafDash) { __kwCache.urlToAlbumKey.set(rawUrl, { ts: now, albumKey: key }); return key; }
-        if (name === leafNorm || name === leafDash) { __kwCache.urlToAlbumKey.set(rawUrl, { ts: now, albumKey: key }); return key; }
-        if (title === leafNorm || title === leafDash) { __kwCache.urlToAlbumKey.set(rawUrl, { ts: now, albumKey: key }); return key; }
-        if (urlName && (urlName.indexOf(leafNorm) !== -1 || urlName.indexOf(leafDash) !== -1)) { __kwCache.urlToAlbumKey.set(rawUrl, { ts: now, albumKey: key }); return key; }
-      }
-    } catch (_) {}
-  }
-
-  __kwCache.urlToAlbumKey.set(rawUrl, { ts: now, albumKey: "" });
-  return "";
-}
-
-function extractAlbumKeywords(album) {
-  if (!album) return [];
-  let arr = [];
-  if (Array.isArray(album.KeywordArray) && album.KeywordArray.length) {
-    arr = album.KeywordArray
-      .map((k) => {
-        if (!k) return "";
-        if (typeof k === "string") return k;
-        if (typeof k === "object" && typeof k.Name === "string") return k.Name;
-        if (typeof k === "object" && typeof k.value === "string") return k.value;
-        return "";
-      })
-      .filter(Boolean);
-  } else if (typeof album.Keywords === "string" && album.Keywords.trim()) {
-    arr = album.Keywords.split(/[;,]+/).map((k) => String(k || "").trim()).filter(Boolean);
-  }
-
-  const seen = new Set();
-  const out = [];
-  for (const k of arr) {
-    const nk = _normKw(k);
-    if (!nk) continue;
-    if (seen.has(nk)) continue;
-    seen.add(nk);
-    out.push(String(k).trim());
-  }
-  return out;
-}
-
-async function getAlbumMetaCached(albumKey) {
-  const key = String(albumKey || "").trim();
-  if (!key) return null;
-  const keyLower = key.toLowerCase();
-  const now = Date.now();
-  const cached = __kwCache.albumMeta.get(keyLower);
-  if (cached && now - cached.ts < 6 * 60 * 60 * 1000) return cached;
-
-  try {
-    // Do NOT mutate AlbumKey casing. SmugMug AlbumKey lookups can fail if case is altered.
-    const d = await smug(`/album/${encodeURIComponent(key)}?_accept=application/json&_verbosity=1`);
-    const album = (d && d.Response && d.Response.Album) ? d.Response.Album : null;
-    const kws = extractAlbumKeywords(album);
-    const kwSet = new Set(kws.map((k) => _normKw(k)));
-    const pack = { ts: now, album, kwSet };
-    __kwCache.albumMeta.set(keyLower, pack);
-    return pack;
-  } catch (_) {
-    const pack = { ts: now, album: null, kwSet: new Set() };
-    __kwCache.albumMeta.set(keyLower, pack);
-    return pack;
-  }
-}
-
-async function albumsByKeyword(keywordRaw) {
-  const kwNorm = _normKw(keywordRaw);
-  if (!kwNorm) return [];
-
-  const now = Date.now();
-  const cached = __kwCache.byKw.get(kwNorm);
-  if (cached && now - cached.ts < 2 * 60 * 1000) return cached.albums || [];
-
-  // Fast path: use SmugMug keyword endpoint to avoid scanning every match album.
-  // Note: the keyword endpoint sometimes returns album stubs without WebUri/UrlPath,
-  // so we enrich each hit via /album/<AlbumKey> before returning.
-  let kwAlbums = [];
-  try {
-    const d = await smug(`/keyword/${encodeURIComponent(String(keywordRaw || "").trim())}!albums?_accept=application/json&_verbosity=1`);
-    kwAlbums = (d && d.Response && Array.isArray(d.Response.Album)) ? d.Response.Album : [];
-  } catch (e) {
-    kwAlbums = [];
-  }
-
-  const candidateKeys = Array.from(
-    new Set(
-      (kwAlbums || [])
-        .map((a) => String(a && (a.AlbumKey || a.Key || "") || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  const matches = [];
-  {
-    let idx = 0;
-    const max = Math.min(5, candidateKeys.length || 1);
-    const workers = new Array(max).fill(0).map(async () => {
-      while (true) {
-        const i = idx++;
-        if (i >= candidateKeys.length) break;
-        const albumKey = candidateKeys[i];
-        const pack = await getAlbumMetaCached(albumKey);
-        if (!pack || !pack.album || !pack.kwSet || !pack.kwSet.has(kwNorm)) continue;
-        const a = pack.album;
-        const url = String(a.WebUri || a.Url || "").trim();
-        // Scope to wrestling section only.
-        if (!url || url.toLowerCase().indexOf("/wrestling/") === -1) continue;
-        const title = String(a.Title || a.Name || "").trim();
-        const date = String(a.Date || a.LastUpdated || a.Created || "").trim();
-        const outKey = String(a.AlbumKey || a.Key || albumKey || "").trim() || albumKey;
-        matches.push({ title, date, url, thumb: "", albumKey: outKey });
-      }
-    });
-    await Promise.all(workers);
-  }
-
-  matches.sort((a, b) => {
-    const da = Date.parse(a.date || "") || 0;
-    const db = Date.parse(b.date || "") || 0;
-    if (db !== da) return db - da;
-    return String(a.title || "").localeCompare(String(b.title || ""));
-  });
-
-  __kwCache.byKw.set(kwNorm, { ts: now, albums: matches });
-  return matches;
-}
-
-app.get("/smug/albums-by-keyword", async (req, res) => {
-  allowCors(res, req);
-  try {
-    const kw = String(req.query.keyword || "");
-    const albums = await albumsByKeyword(kw);
-    return res.json({ albums });
-  } catch (err) {
-    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
-    return res.status(500).json({ albums: [], error: "Keyword search failed" });
-  }
-});
-
-app.post("/smug/albums-by-keyword", async (req, res) => {
-  allowCors(res, req);
-  try {
-    const kw = String((req.body && req.body.keyword) || "");
-    const albums = await albumsByKeyword(kw);
-    return res.json({ albums });
-  } catch (err) {
-    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
-    return res.status(500).json({ albums: [], error: "Keyword search failed" });
-  }
-});
 // =========================================================
 // IMAGE SIZES CACHE (for ZIP downloads)
 // =========================================================
@@ -1125,6 +741,34 @@ app.post("/zip", async (req, res) => {
     try { res.status(500).send("ZIP failed"); } catch (_) {}
   }
 });
+
+// =========================================================
+// Wrestling keyword search: albums by album-level keyword
+// =========================================================
+app.get("/smug/albums-by-keyword", async (req, res) => {
+  allowCors(res, req);
+  try {
+    const kw = String(req.query.keyword || "");
+    const albums = await albumsByKeyword(kw);
+    return res.json({ albums });
+  } catch (err) {
+    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
+    return res.status(500).json({ albums: [], error: "Keyword search failed" });
+  }
+});
+
+app.post("/smug/albums-by-keyword", async (req, res) => {
+  allowCors(res, req);
+  try {
+    const kw = String((req.body && req.body.keyword) || "");
+    const albums = await albumsByKeyword(kw);
+    return res.json({ albums });
+  } catch (err) {
+    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
+    return res.status(500).json({ albums: [], error: "Keyword search failed" });
+  }
+});
+
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
