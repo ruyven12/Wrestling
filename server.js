@@ -1,4 +1,4 @@
-console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX) <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
 
 const express = require("express");
 const archiver = require("archiver");
@@ -56,18 +56,8 @@ const SMUG_API_KEY = "SQLhhqgXZJd7MzqgVX563bkbjdCfXt9T";
 const BANDS_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdi19qTDyPeBGzq0PpkdlDS_bNg34XpdRiXy8aBa-Jlu-jg2Wzkj1SnLXtRVFU4TGOh5KHJPK8Lwhc/pub?gid=0&single=true&output=csv";
 
-// Music shows CSV (legacy)
-const MUSIC_SHOWS_SHEET_URL =
+const SHOWS_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdi19qTDyPeBGzq0PpkdlDS_bNg34XpdRiXy8aBa-Jlu-jg2Wzkj1SnLXtRVFU4TGOh5KHJPK8Lwhc/pub?gid=1306635885&single=true&output=csv";
-
-// Wrestling shows CSV (published)
-const WRESTLING_SHOWS_SHEET_URL =
-  "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTGNw3uAMsoML1yS4d12v8FKwrAZQK0OSuZkoml3cQT2s_KEQa7Qs5flD0c_zjJnR2Qy5D465-_6F8/pub?output=csv";
-
-// Default /sheet/shows source. For the wrestling server, this should be Wrestling.
-// You can override via env SHOWS_SHEET_URL if you deploy a music-only instance.
-const SHOWS_SHEET_URL = String(process.env.SHOWS_SHEET_URL || WRESTLING_SHOWS_SHEET_URL).trim() || WRESTLING_SHOWS_SHEET_URL;
-
 
 // Stats tab (Fix / Metadata) – gid provided by Chris
 // NOTE: Uses the Google Sheet "export?format=csv" URL style.
@@ -97,17 +87,44 @@ async function smug(endpoint) {
 }
 
 // =========================================================
+// ✔ NEW: SmugMug Web URL Lookup helper
+// Converts a public SmugMug web URL into API objects (Node/Album/Image).
+// Used by Wrestling match album view to resolve AlbumKey + NodeKey.
+// =========================================================
+async function smugWebUrlLookup(webUrl) {
+  const u = String(webUrl || "").trim();
+  if (!u) throw new Error("Missing WebUri");
+
+  // SmugMug expects WebUri to be the full public URL.
+  const url = `https://api.smugmug.com/api/v2!weburllookup?WebUri=${encodeURIComponent(u)}&APIKey=${SMUG_API_KEY}`;
+
+  const r = await fetch(url, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "SmugProxy/1.0"
+    }
+  });
+
+  if (!r.ok) {
+    const t = await r.text().catch(() => "");
+    throw new Error(`SmugMug weburllookup upstream returned ${r.status}: ${t.slice(0, 200)}`);
+  }
+
+  return r.json();
+}
+
+// =========================================================
 // SHEETS → CSV
 // =========================================================
 app.get("/sheet/bands", async (req, res) => {
   try {
     const r = await fetch(BANDS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res, req);
+    allowCors(res);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /bands fetch failed:", err);
-    allowCors(res, req);
+    allowCors(res);
     res.status(500).send("sheet error");
   }
 });
@@ -116,11 +133,11 @@ app.get("/sheet/shows", async (req, res) => {
   try {
     const r = await fetch(SHOWS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res, req);
+    allowCors(res);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /shows fetch failed:", err);
-    allowCors(res, req);
+    allowCors(res);
     res.status(500).send("shows sheet error");
   }
 });
@@ -131,11 +148,11 @@ async function sendStatsCsv(req, res) {
   try {
     const r = await fetch(STATS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res, req);
+    allowCors(res);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /stats fetch failed:", err);
-    allowCors(res, req);
+    allowCors(res);
     res.status(500).send("stats sheet error");
   }
 }
@@ -155,7 +172,7 @@ app.get("/sheet/fix/", sendStatsCsv);
 // IMAGE PROXY (posters)
 // =========================================================
 app.get("/show-poster", async (req, res) => {
-  allowCors(res, req);
+  allowCors(res);
   const remoteUrl = req.query.url;
   if (!remoteUrl) return res.status(400).send("missing url");
 
@@ -248,7 +265,7 @@ app.get("/smug/:slug", async (req, res) => {
     }
   }
 
-  allowCors(res, req);
+  allowCors(res);
 
   if (successData) {
     successData._usedUrl = usedUrl;
@@ -260,6 +277,74 @@ app.get("/smug/:slug", async (req, res) => {
     info: `No albums found for slug=${slug} (tried: ${candidates.join(" | ")})`
   });
 });
+
+// =========================================================
+// ✔ NEW: Resolve public SmugMug URL → AlbumKey (+ NodeKey)
+// Wrestling match pages are public URLs (e.g. /Wrestling/Limitless/011626/Match-3)
+// The frontend uses this to fetch images + build the /shop link.
+// =========================================================
+async function handleResolveAlbum(req, res) {
+  try {
+    const webUrl = String(req.query.url || "").trim();
+    if (!webUrl) {
+      allowCors(res, req);
+      return res.status(400).json({ error: "missing url" });
+    }
+
+    const data = await smugWebUrlLookup(webUrl);
+    const resp = (data && data.Response) ? data.Response : {};
+
+    // SmugMug shapes can vary; normalize best-effort.
+    const albumObj = resp.Album || (resp.Node && resp.Node.Album) || null;
+    const nodeObj = resp.Node || null;
+
+    let albumKey = albumObj && typeof albumObj.AlbumKey === "string" ? albumObj.AlbumKey :
+                   albumObj && typeof albumObj.Key === "string" ? albumObj.Key :
+                   typeof resp.AlbumKey === "string" ? resp.AlbumKey :
+                   "";
+
+    const nodeKey = nodeObj && typeof nodeObj.NodeKey === "string" ? nodeObj.NodeKey :
+                    typeof resp.NodeKey === "string" ? resp.NodeKey :
+                    "";
+
+    // If WebUrlLookup didn't include AlbumKey but did include NodeKey,
+    // resolve the node to its album (common for some public URLs).
+    if (!albumKey && nodeKey) {
+      try {
+        const nodeData = await smug(`/node/${encodeURIComponent(nodeKey)}?_expand=Album`);
+        const nresp = (nodeData && nodeData.Response) ? nodeData.Response : {};
+        const nnode = nresp.Node || null;
+        const nalbum = (nnode && nnode.Album) ? nnode.Album : (nresp.Album || null);
+        if (nalbum && typeof nalbum.AlbumKey === "string") albumKey = nalbum.AlbumKey;
+        else if (nalbum && typeof nalbum.Key === "string") albumKey = nalbum.Key;
+      } catch (e) {
+        // Swallow: we still return whatever we have.
+        console.warn("node->album resolve failed:", e && e.message ? e.message : e);
+      }
+    }
+
+    allowCors(res, req);
+    return res.json({
+      albumKey: String(albumKey || "").trim(),
+      nodeKey: String(nodeKey || "").trim(),
+      finalUrl: webUrl,
+      _raw: undefined
+    });
+  } catch (err) {
+    console.error("resolve-album failed:", err);
+    allowCors(res, req);
+    return res.status(500).json({ error: "resolve-album failed" });
+  }
+}
+
+// The shows module tries multiple route names for compatibility.
+app.get("/smug/resolve-album", handleResolveAlbum);
+app.get("/smug/resolve", handleResolveAlbum);
+app.get("/smug/album-from-url", handleResolveAlbum);
+app.get("/smug/url-to-album", handleResolveAlbum);
+
+// Shop Node resolver (explicit route; same payload, just different name)
+app.get("/smug/resolve-shop-node", handleResolveAlbum);
 
 // =========================================================
 // ALBUM → IMAGES (paged)
@@ -310,11 +395,11 @@ app.get("/smug/album-meta/:albumKey", async (req, res) => {
       `/album/${encodeURIComponent(albumKey)}?_expand=Keywords&_expand=KeywordArray`
     );
 
-    allowCors(res, req);
+    allowCors(res);
     return res.json(result);
   } catch (err) {
     console.error("Error fetching album metadata:", err);
-    allowCors(res, req);
+    allowCors(res);
     return res.status(500).json({ error: "Failed to fetch album metadata" });
   }
 });
@@ -341,11 +426,11 @@ app.get("/smug/image/:imageKey", async (req, res) => {
 
     const data = await r.json();
 
-    allowCors(res, req);
+    allowCors(res);
     return res.json(data);
   } catch (err) {
     console.error("error fetching image detail:", err);
-    allowCors(res, req);
+    allowCors(res);
     return res.status(500).json({ error: "image detail fetch failed" });
   }
 });
@@ -400,13 +485,13 @@ function fetchStreamWithRedirects(inputUrl, redirectsLeft = 5) {
 // Returns: application/zip stream
 // =========================================================
 app.options("/zip", (req, res) => {
-  allowCors(res, req);
+  allowCors(res);
   return res.status(204).send("");
 });
 
 app.post("/zip", async (req, res) => {
   try {
-    allowCors(res, req);
+    allowCors(res);
 
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!items.length) return res.status(400).send("No items provided");
@@ -455,7 +540,7 @@ app.post("/zip", async (req, res) => {
   } catch (err) {
     console.error("POST /zip failed:", err);
     try {
-      allowCors(res, req);
+      allowCors(res);
       return res.status(500).send("ZIP failed");
     } catch (_) {
       try { res.end(); } catch (_) {}
@@ -479,7 +564,7 @@ const ANALYTICS_WEBAPP_URL = process.env.ANALYTICS_WEBAPP_URL || "";
 const ANALYTICS_KEY = process.env.ANALYTICS_KEY || "";
 
 app.post("/track", async (req, res) => {
-  allowCors(res, req);
+  allowCors(res);
 
   // Always respond quickly so the UI never feels slow.
   // (We still try to forward the event to Sheets in the background.)
@@ -542,7 +627,7 @@ app.post("/track", async (req, res) => {
 // 404 (keep CORS headers on missing routes too)
 // =========================================================
 app.use((req, res) => {
-  allowCors(res, req);
+  allowCors(res);
   res.status(404).json({ error: "Not found", path: req.originalUrl });
 });
 
