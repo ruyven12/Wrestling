@@ -178,6 +178,145 @@ app.get("/show-poster", async (req, res) => {
 // =========================================================
 // SMART FOLDER → ALBUMS
 // =========================================================
+
+// =========================================================
+// ✔ NEW: RESOLVE A SMUGMUG ALBUM URL → AlbumKey (Wrestling)
+// IMPORTANT: This MUST be defined BEFORE /smug/:slug because otherwise
+// /smug/resolve-album gets treated as a band slug and returns Album:[]
+// =========================================================
+function extractAlbumKeyFromUri(uri) {
+  const s = String(uri || "");
+  // Examples:
+  //  /api/v2/album/AbCdEf
+  //  https://api.smugmug.com/api/v2/album/AbCdEf
+  const m = s.match(/\/album\/([^/?#]+)/i);
+  return m ? String(m[1]).trim() : "";
+}
+
+async function resolveAlbumKeyViaNodeUrlPath(urlString) {
+  const u = new URL(urlString);
+  const urlPath = u.pathname || "";
+  if (!urlPath || urlPath === "/") return { albumKey: "", nodeKey: "", finalUrl: u.toString() };
+
+  // SmugMug supports resolving a Node by UrlPath.
+  // If this UrlPath is an Album node, it typically includes an AlbumUri.
+  const data = await smug(`/node?UrlPath=${encodeURIComponent(urlPath)}&_verbosity=1`);
+
+  const resp = (data && data.Response) || {};
+  const node = (Array.isArray(resp.Node) && resp.Node[0]) ? resp.Node[0] : resp.Node;
+
+  let nodeKey = "";
+  let albumKey = "";
+
+  if (node && typeof node === "object") {
+    if (typeof node.NodeKey === "string") nodeKey = node.NodeKey.trim();
+    if (typeof node.AlbumKey === "string") albumKey = node.AlbumKey.trim();
+    if (!albumKey && typeof node.AlbumUri === "string") albumKey = extractAlbumKeyFromUri(node.AlbumUri);
+
+    // Some responses nest Uris
+    if (!albumKey && node.Uris && typeof node.Uris === "object") {
+      const maybeAlbumUri = node.Uris.Album || node.Uris.album || node.Uris.AlbumUri;
+      if (typeof maybeAlbumUri === "string") albumKey = extractAlbumKeyFromUri(maybeAlbumUri);
+    }
+
+    // Sometimes the node itself is an album and its Uri contains /album/<key>
+    if (!albumKey && typeof node.Uri === "string") albumKey = extractAlbumKeyFromUri(node.Uri);
+  }
+
+  return { albumKey, nodeKey, finalUrl: u.toString(), urlPath };
+}
+
+async function resolveAlbumKeyViaHtmlScrape(urlString) {
+  // Fallback: fetch the SmugMug page HTML and scrape AlbumKey.
+  const r = await fetch(urlString, {
+    headers: {
+      "User-Agent": "SmugProxy/1.0",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    }
+  });
+  const html = await r.text();
+
+  // Common patterns seen in SmugMug pages.
+  const m1 = html.match(/"AlbumKey"\s*:\s*"([A-Za-z0-9]+)"/);
+  if (m1 && m1[1]) return String(m1[1]).trim();
+  const m2 = html.match(/AlbumKey"\s*"\s*:\s*"([A-Za-z0-9]+)"/);
+  if (m2 && m2[1]) return String(m2[1]).trim();
+  const m3 = html.match(/albumKey\s*[:=]\s*"([A-Za-z0-9]+)"/i);
+  if (m3 && m3[1]) return String(m3[1]).trim();
+  return "";
+}
+
+app.get("/smug/resolve-album", async (req, res) => {
+  allowCors(res, req);
+  const input = String(req.query.url || "").trim();
+  if (!input) return res.status(400).json({ error: "missing url" });
+
+  let albumKey = "";
+  let nodeKey = "";
+  let finalUrl = input;
+  let urlPath = "";
+
+  try {
+    // Try API resolve first (fast + clean).
+    const out = await resolveAlbumKeyViaNodeUrlPath(input);
+    albumKey = out.albumKey || "";
+    nodeKey = out.nodeKey || "";
+    finalUrl = out.finalUrl || input;
+    urlPath = out.urlPath || "";
+  } catch (e) {
+    console.log("resolve-album via node failed:", e && e.message ? e.message : e);
+  }
+
+  try {
+    // Fallback for edge cases.
+    if (!albumKey) albumKey = await resolveAlbumKeyViaHtmlScrape(input);
+  } catch (e) {
+    console.log("resolve-album via html failed:", e && e.message ? e.message : e);
+  }
+
+  return res.json({
+    albumKey: albumKey || "",
+    AlbumKey: albumKey || "",
+    nodeKey: nodeKey || "",
+    finalUrl,
+    urlPath
+  });
+});
+
+// Resolve shop node info as well (frontend calls this first)
+app.get("/smug/resolve-shop-node", async (req, res) => {
+  allowCors(res, req);
+  const input = String(req.query.url || "").trim();
+  if (!input) return res.status(400).json({ error: "missing url" });
+
+  let albumKey = "";
+  let nodeKey = "";
+  let finalUrl = input;
+  let urlPath = "";
+
+  try {
+    const out = await resolveAlbumKeyViaNodeUrlPath(input);
+    albumKey = out.albumKey || "";
+    nodeKey = out.nodeKey || "";
+    finalUrl = out.finalUrl || input;
+    urlPath = out.urlPath || "";
+  } catch (e) {
+    console.log("resolve-shop-node via node failed:", e && e.message ? e.message : e);
+  }
+
+  try {
+    if (!albumKey) albumKey = await resolveAlbumKeyViaHtmlScrape(input);
+  } catch (_) {}
+
+  return res.json({
+    nodeKey: nodeKey || "",
+    albumKey: albumKey || "",
+    AlbumKey: albumKey || "",
+    finalUrl,
+    urlPath
+  });
+});
+
 app.get("/smug/:slug", async (req, res) => {
   const slug = req.params.slug;
   const folderFromSheet = req.query.folder;
