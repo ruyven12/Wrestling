@@ -1,4 +1,4 @@
-console.log(">>> SERVER FILE VERSION: PATCHED-FULL-1 <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX) <<<");
 
 const express = require("express");
 const archiver = require("archiver");
@@ -56,8 +56,18 @@ const SMUG_API_KEY = "SQLhhqgXZJd7MzqgVX563bkbjdCfXt9T";
 const BANDS_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdi19qTDyPeBGzq0PpkdlDS_bNg34XpdRiXy8aBa-Jlu-jg2Wzkj1SnLXtRVFU4TGOh5KHJPK8Lwhc/pub?gid=0&single=true&output=csv";
 
-const SHOWS_SHEET_URL =
+// Music shows CSV (legacy)
+const MUSIC_SHOWS_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdi19qTDyPeBGzq0PpkdlDS_bNg34XpdRiXy8aBa-Jlu-jg2Wzkj1SnLXtRVFU4TGOh5KHJPK8Lwhc/pub?gid=1306635885&single=true&output=csv";
+
+// Wrestling shows CSV (published)
+const WRESTLING_SHOWS_SHEET_URL =
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTGNw3uAMsoML1yS4d12v8FKwrAZQK0OSuZkoml3cQT2s_KEQa7Qs5flD0c_zjJnR2Qy5D465-_6F8/pub?output=csv";
+
+// Default /sheet/shows source. For the wrestling server, this should be Wrestling.
+// You can override via env SHOWS_SHEET_URL if you deploy a music-only instance.
+const SHOWS_SHEET_URL = String(process.env.SHOWS_SHEET_URL || WRESTLING_SHOWS_SHEET_URL).trim() || WRESTLING_SHOWS_SHEET_URL;
+
 
 // Stats tab (Fix / Metadata) – gid provided by Chris
 // NOTE: Uses the Google Sheet "export?format=csv" URL style.
@@ -93,11 +103,11 @@ app.get("/sheet/bands", async (req, res) => {
   try {
     const r = await fetch(BANDS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res);
+    allowCors(res, req);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /bands fetch failed:", err);
-    allowCors(res);
+    allowCors(res, req);
     res.status(500).send("sheet error");
   }
 });
@@ -106,11 +116,11 @@ app.get("/sheet/shows", async (req, res) => {
   try {
     const r = await fetch(SHOWS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res);
+    allowCors(res, req);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /shows fetch failed:", err);
-    allowCors(res);
+    allowCors(res, req);
     res.status(500).send("shows sheet error");
   }
 });
@@ -121,11 +131,11 @@ async function sendStatsCsv(req, res) {
   try {
     const r = await fetch(STATS_SHEET_URL);
     const csv = await r.text();
-    allowCors(res);
+    allowCors(res, req);
     res.type("text/plain").send(csv);
   } catch (err) {
     console.error("sheet /stats fetch failed:", err);
-    allowCors(res);
+    allowCors(res, req);
     res.status(500).send("stats sheet error");
   }
 }
@@ -145,7 +155,7 @@ app.get("/sheet/fix/", sendStatsCsv);
 // IMAGE PROXY (posters)
 // =========================================================
 app.get("/show-poster", async (req, res) => {
-  allowCors(res);
+  allowCors(res, req);
   const remoteUrl = req.query.url;
   if (!remoteUrl) return res.status(400).send("missing url");
 
@@ -238,7 +248,7 @@ app.get("/smug/:slug", async (req, res) => {
     }
   }
 
-  allowCors(res);
+  allowCors(res, req);
 
   if (successData) {
     successData._usedUrl = usedUrl;
@@ -300,11 +310,11 @@ app.get("/smug/album-meta/:albumKey", async (req, res) => {
       `/album/${encodeURIComponent(albumKey)}?_expand=Keywords&_expand=KeywordArray`
     );
 
-    allowCors(res);
+    allowCors(res, req);
     return res.json(result);
   } catch (err) {
     console.error("Error fetching album metadata:", err);
-    allowCors(res);
+    allowCors(res, req);
     return res.status(500).json({ error: "Failed to fetch album metadata" });
   }
 });
@@ -331,11 +341,11 @@ app.get("/smug/image/:imageKey", async (req, res) => {
 
     const data = await r.json();
 
-    allowCors(res);
+    allowCors(res, req);
     return res.json(data);
   } catch (err) {
     console.error("error fetching image detail:", err);
-    allowCors(res);
+    allowCors(res, req);
     return res.status(500).json({ error: "image detail fetch failed" });
   }
 });
@@ -390,13 +400,13 @@ function fetchStreamWithRedirects(inputUrl, redirectsLeft = 5) {
 // Returns: application/zip stream
 // =========================================================
 app.options("/zip", (req, res) => {
-  allowCors(res);
+  allowCors(res, req);
   return res.status(204).send("");
 });
 
 app.post("/zip", async (req, res) => {
   try {
-    allowCors(res);
+    allowCors(res, req);
 
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (!items.length) return res.status(400).send("No items provided");
@@ -445,7 +455,7 @@ app.post("/zip", async (req, res) => {
   } catch (err) {
     console.error("POST /zip failed:", err);
     try {
-      allowCors(res);
+      allowCors(res, req);
       return res.status(500).send("ZIP failed");
     } catch (_) {
       try { res.end(); } catch (_) {}
@@ -469,7 +479,7 @@ const ANALYTICS_WEBAPP_URL = process.env.ANALYTICS_WEBAPP_URL || "";
 const ANALYTICS_KEY = process.env.ANALYTICS_KEY || "";
 
 app.post("/track", async (req, res) => {
-  allowCors(res);
+  allowCors(res, req);
 
   // Always respond quickly so the UI never feels slow.
   // (We still try to forward the event to Sheets in the background.)
@@ -532,7 +542,7 @@ app.post("/track", async (req, res) => {
 // 404 (keep CORS headers on missing routes too)
 // =========================================================
 app.use((req, res) => {
-  allowCors(res);
+  allowCors(res, req);
   res.status(404).json({ error: "Not found", path: req.originalUrl });
 });
 
