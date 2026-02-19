@@ -69,7 +69,9 @@ async function fetchTextWithTimeout(url, ms) {
 // ✔ FIXED: SmugMug API helper (must be ABOVE all routes)
 // =========================================================
 async function smug(endpoint) {
-  const url = `https://api.smugmug.com/api/v2${endpoint}&APIKey=${SMUG_API_KEY}`;
+  // endpoint may or may not already include a query string. Ensure APIKey is appended safely.
+  const joiner = String(endpoint || "").includes("?") ? "&" : "?";
+  const url = `https://api.smugmug.com/api/v2${endpoint}${joiner}APIKey=${SMUG_API_KEY}`;
 
   const r = await fetch(url, {
     headers: {
@@ -84,6 +86,77 @@ async function smug(endpoint) {
 
   return r.json();
 }
+
+// =========================================================
+// ✔ NEW: KEYWORD → ALBUMS (used by Wrestling keyword search modal)
+// =========================================================
+// GET  /smug/albums-by-keyword?keyword=<kw>
+// POST /smug/albums-by-keyword { keyword: "<kw>" }
+// Returns: { albums: [{ title, date, url, thumb, albumKey }] }
+async function albumsByKeyword(keywordRaw) {
+  const kw = String(keywordRaw || "").trim().replace(/\s+/g, " ");
+  if (!kw) return [];
+
+  // SmugMug Keyword endpoint
+  // Note: smug() adds APIKey; we include accept/verbosity params here.
+  const data = await smug(
+    `/keyword/${encodeURIComponent(kw)}!albums?_accept=application/json&_verbosity=1`
+  );
+
+  const albums = (data && data.Response && Array.isArray(data.Response.Album)) ? data.Response.Album : [];
+
+  // Wrestling scope filter: only include albums that clearly live under /Wrestling/
+  // (SmugMug typically provides UrlPath, WebUri, or Url depending on expansion)
+  const scoped = albums.filter((a) => {
+    const urlPath = String(a && (a.UrlPath || a.Urlpath || a.WebUri || a.Url || "") || "");
+    const uri = String(a && (a.Uri || "") || "");
+    const blob = (urlPath + " " + uri).toLowerCase();
+    return blob.includes("/wrestling/") || blob.includes("wrestling/");
+  });
+
+  // Normalize response for the front-end modal
+  return scoped.map((a) => {
+    const albumKey = String(a && (a.AlbumKey || a.Key || "") || "").trim();
+    const title = String(a && (a.Title || a.Name || "") || "").trim();
+    const url = String(a && (a.WebUri || a.Url || a.UrlPath || "") || "").trim();
+
+    // Best-effort date fields (not always present)
+    const date = String(
+      (a && (a.Date || a.LastUpdated || a.Created || a.SortDate || "")) || ""
+    ).trim();
+
+    // Best-effort thumbnail (not always present without expansions)
+    const thumb = String(
+      (a && (a.ThumbnailUrl || a.ThumbUrl || a.ThumbUri || "")) || ""
+    ).trim();
+
+    return { title, date, url, thumb, albumKey };
+  });
+}
+
+app.get("/smug/albums-by-keyword", async (req, res) => {
+  allowCors(res, req);
+  try {
+    const kw = String(req.query.keyword || "");
+    const albums = await albumsByKeyword(kw);
+    return res.json({ albums });
+  } catch (err) {
+    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
+    return res.status(500).json({ albums: [], error: "Keyword search failed" });
+  }
+});
+
+app.post("/smug/albums-by-keyword", async (req, res) => {
+  allowCors(res, req);
+  try {
+    const kw = String((req.body && req.body.keyword) || "");
+    const albums = await albumsByKeyword(kw);
+    return res.json({ albums });
+  } catch (err) {
+    console.error("albums-by-keyword failed:", err && err.message ? err.message : err);
+    return res.status(500).json({ albums: [], error: "Keyword search failed" });
+  }
+});
 // =========================================================
 // IMAGE SIZES CACHE (for ZIP downloads)
 // =========================================================
