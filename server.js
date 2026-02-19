@@ -291,9 +291,23 @@ async function resolveAlbumKeyFromUrlFast(albumUrl) {
   const leafNorm = norm(leaf);
   const leafDash = normDash(leaf);
 
+  // IMPORTANT: SmugMug folder paths must be URL-encoded per path segment.
+  // Some folder names can contain spaces/punctuation; encode each segment to avoid upstream errors.
+  function encodeFolderPath(partsArr) {
+    return partsArr
+      .map((p) => {
+        try {
+          return encodeURIComponent(decodeURIComponent(String(p || "")));
+        } catch (_) {
+          return encodeURIComponent(String(p || ""));
+        }
+      })
+      .join("/");
+  }
+
   for (const parent of parentCandidates) {
-    const folderPath = parent.map((p) => decodeURIComponent(p)).join("/");
-    const apiPath = `/folder/user/vmpix/${folderPath}!albums?_accept=application/json`;
+    const folderPathEnc = encodeFolderPath(parent);
+    const apiPath = `/folder/user/vmpix/${folderPathEnc}!albums?_accept=application/json`;
     try {
       const data = await smug(apiPath);
       const albums = (data && data.Response && Array.isArray(data.Response.Album)) ? data.Response.Album : [];
@@ -354,6 +368,7 @@ async function getAlbumMetaCached(albumKey) {
   if (cached && now - cached.ts < 6 * 60 * 60 * 1000) return cached;
 
   try {
+    // Do NOT mutate AlbumKey casing. SmugMug AlbumKey lookups can fail if case is altered.
     const d = await smug(`/album/${encodeURIComponent(key)}?_accept=application/json&_verbosity=1`);
     const album = (d && d.Response && d.Response.Album) ? d.Response.Album : null;
     const kws = extractAlbumKeywords(album);
@@ -376,54 +391,44 @@ async function albumsByKeyword(keywordRaw) {
   const cached = __kwCache.byKw.get(kwNorm);
   if (cached && now - cached.ts < 2 * 60 * 1000) return cached.albums || [];
 
-  const shows = await ensureShowsRows();
-
-  const urlSet = new Set();
-  for (const row of (shows || [])) {
-    for (let i = 1; i <= 10; i++) {
-      const urlCell = getMatchField(row, i, "url");
-      const resolved = resolveMatchUrl(urlCell, row);
-      if (!resolved) continue;
-      if (resolved.toLowerCase().indexOf("/wrestling/") === -1) continue;
-      urlSet.add(resolved);
-    }
-  }
-  const urls = Array.from(urlSet);
-
-  const albumKeys = [];
-  {
-    let idx = 0;
-    const max = Math.min(5, urls.length || 1);
-    const workers = new Array(max).fill(0).map(async () => {
-      while (true) {
-        const i = idx++;
-        if (i >= urls.length) break;
-        const k = await resolveAlbumKeyFromUrlFast(urls[i]);
-        if (k) albumKeys.push(k);
-      }
-    });
-    await Promise.all(workers);
+  // Fast path: use SmugMug keyword endpoint to avoid scanning every match album.
+  // Note: the keyword endpoint sometimes returns album stubs without WebUri/UrlPath,
+  // so we enrich each hit via /album/<AlbumKey> before returning.
+  let kwAlbums = [];
+  try {
+    const d = await smug(`/keyword/${encodeURIComponent(String(keywordRaw || "").trim())}!albums?_accept=application/json&_verbosity=1`);
+    kwAlbums = (d && d.Response && Array.isArray(d.Response.Album)) ? d.Response.Album : [];
+  } catch (e) {
+    kwAlbums = [];
   }
 
-  const uniqKeys = Array.from(new Set(albumKeys.map((k) => String(k || "").trim().toLowerCase()).filter(Boolean)));
+  const candidateKeys = Array.from(
+    new Set(
+      (kwAlbums || [])
+        .map((a) => String(a && (a.AlbumKey || a.Key || "") || "").trim())
+        .filter(Boolean)
+    )
+  );
 
   const matches = [];
   {
     let idx = 0;
-    const max = Math.min(5, uniqKeys.length || 1);
+    const max = Math.min(5, candidateKeys.length || 1);
     const workers = new Array(max).fill(0).map(async () => {
       while (true) {
         const i = idx++;
-        if (i >= uniqKeys.length) break;
-        const albumKeyLower = uniqKeys[i];
-        const pack = await getAlbumMetaCached(albumKeyLower);
+        if (i >= candidateKeys.length) break;
+        const albumKey = candidateKeys[i];
+        const pack = await getAlbumMetaCached(albumKey);
         if (!pack || !pack.album || !pack.kwSet || !pack.kwSet.has(kwNorm)) continue;
         const a = pack.album;
-        const albumKey = String(a.AlbumKey || a.Key || albumKeyLower || "").trim() || albumKeyLower;
-        const title = String(a.Title || a.Name || "").trim();
         const url = String(a.WebUri || a.Url || "").trim();
+        // Scope to wrestling section only.
+        if (!url || url.toLowerCase().indexOf("/wrestling/") === -1) continue;
+        const title = String(a.Title || a.Name || "").trim();
         const date = String(a.Date || a.LastUpdated || a.Created || "").trim();
-        matches.push({ title, date, url, thumb: "", albumKey });
+        const outKey = String(a.AlbumKey || a.Key || albumKey || "").trim() || albumKey;
+        matches.push({ title, date, url, thumb: "", albumKey: outKey });
       }
     });
     await Promise.all(workers);
