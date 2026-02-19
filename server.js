@@ -105,14 +105,61 @@ async function albumsByKeyword(keywordRaw) {
 
   const albums = (data && data.Response && Array.isArray(data.Response.Album)) ? data.Response.Album : [];
 
-  // Wrestling scope filter: only include albums that clearly live under /Wrestling/
-  // (SmugMug typically provides UrlPath, WebUri, or Url depending on expansion)
-  const scoped = albums.filter((a) => {
-    const urlPath = String(a && (a.UrlPath || a.Urlpath || a.WebUri || a.Url || "") || "");
-    const uri = String(a && (a.Uri || "") || "");
+  // SmugMug's keyword endpoint sometimes returns Album stubs without WebUri/UrlPath.
+  // If we scope-filter those stubs, we can accidentally drop everything ("0 albums found").
+  // Fix: enrich results by AlbumKey when needed, then apply the /Wrestling/ scope filter.
+
+  function blobHasWrestlingScope(obj) {
+    const urlPath = String(obj && (obj.UrlPath || obj.Urlpath || obj.WebUri || obj.Url || obj.webUrl || obj.url || "") || "");
+    const uri = String(obj && (obj.Uri || obj.uri || "") || "");
     const blob = (urlPath + " " + uri).toLowerCase();
     return blob.includes("/wrestling/") || blob.includes("wrestling/");
+  }
+
+  async function fetchAlbumDetailByKey(albumKey) {
+    if (!albumKey) return null;
+    try {
+      // This returns Response.Album with WebUri/UrlPath reliably.
+      const d = await smug(`/album/${encodeURIComponent(albumKey)}?_accept=application/json&_verbosity=1`);
+      return (d && d.Response && d.Response.Album) ? d.Response.Album : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function mapPool(items, limit, mapper) {
+    const arr = Array.isArray(items) ? items : [];
+    const out = new Array(arr.length);
+    let idx = 0;
+    const workers = new Array(Math.max(1, Number(limit) || 1)).fill(0).map(async () => {
+      while (true) {
+        const i = idx++;
+        if (i >= arr.length) break;
+        out[i] = await mapper(arr[i], i);
+      }
+    });
+    await Promise.all(workers);
+    return out;
+  }
+
+  const enriched = await mapPool(albums, 6, async (a) => {
+    const albumKey = String(a && (a.AlbumKey || a.Key || "") || "").trim();
+
+    // If the stub already has a Wrestling-scoped Url/WebUri, keep as-is.
+    if (blobHasWrestlingScope(a)) return a;
+
+    // If it's missing a usable path/url, fetch the full album by key.
+    const hasAnyPath = !!String(a && (a.WebUri || a.UrlPath || a.Url || "") || "").trim();
+    if (!hasAnyPath && albumKey) {
+      const full = await fetchAlbumDetailByKey(albumKey);
+      if (full) return Object.assign({}, a, full);
+    }
+
+    // Otherwise return original (may still get filtered out if clearly not wrestling).
+    return a;
   });
+
+  const scoped = (enriched || []).filter((a) => blobHasWrestlingScope(a));
 
   // Normalize response for the front-end modal
   return scoped.map((a) => {
