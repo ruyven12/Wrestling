@@ -353,6 +353,54 @@ function _splitKeywords(raw) {
   return s.split(/[;,]/g).map(x => String(x || "").trim()).filter(Boolean);
 }
 
+// ===============================
+// DATE HELPERS (UriPath -> Pretty)
+// ===============================
+// Example UriPath: /Wrestling/Limitless/011626/Match-1
+// We extract "011626" (MMDDYY) and format "January 16th, 2026".
+function _extractMmddyyFromUriPath(uriPath) {
+  const p = String(uriPath || "").trim();
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  // Find the first 6-digit segment (defensive; supports other feds/paths too)
+  for (let i = 0; i < parts.length; i++) {
+    const seg = String(parts[i] || "").trim();
+    if (/^\d{6}$/.test(seg)) return seg;
+  }
+  return "";
+}
+
+function _ordinalSuffix(day) {
+  const d = Number(day);
+  if (!Number.isFinite(d)) return "th";
+  if (d % 100 >= 11 && d % 100 <= 13) return "th";
+  if (d % 10 === 1) return "st";
+  if (d % 10 === 2) return "nd";
+  if (d % 10 === 3) return "rd";
+  return "th";
+}
+
+function _prettyDateFromMmddyy(mmddyy) {
+  const s = String(mmddyy || "").trim();
+  if (!/^\d{6}$/.test(s)) return "";
+  const mm = Number(s.slice(0, 2));
+  const dd = Number(s.slice(2, 4));
+  const yy = Number(s.slice(4, 6));
+  if (!(mm >= 1 && mm <= 12)) return "";
+  if (!(dd >= 1 && dd <= 31)) return "";
+  const year = 2000 + yy;
+  const date = new Date(year, mm - 1, dd);
+  if (isNaN(date.getTime())) return "";
+  const monthName = date.toLocaleString("en-US", { month: "long" });
+  return `${monthName} ${dd}${_ordinalSuffix(dd)}, ${year}`;
+}
+
+function _prettyDateFromUriPath(uriPath) {
+  const mmddyy = _extractMmddyyFromUriPath(uriPath);
+  if (!mmddyy) return "";
+  return _prettyDateFromMmddyy(mmddyy);
+}
+
 async function _fetchAllPaged(endpointBase, responseKey) {
   // endpointBase should contain '?', e.g. "/folder/...!albums?count=100"
   const out = [];
@@ -485,12 +533,20 @@ async function _buildWrestlingAlbumIndex(force) {
             (album && typeof album.Keyword === "string") ? album.Keyword :
             "";
 
+          // Capture UriPath (if available) so the frontend can show a show-date.
+          // This is derived from your folder naming convention: /Wrestling/<FED>/MMDDYY/...
+          const uriPath = (album && typeof album.UriPath === "string") ? album.UriPath : "";
+          item.uriPath = String(uriPath || "").trim();
+          item.date = _prettyDateFromUriPath(item.uriPath);
+
           item.keywordsRaw = String(raw || "").trim();
           item.keywords = _splitKeywords(item.keywordsRaw).map(_normKw);
         } catch (e) {
           // Fail-soft: keep album without keywords
           item.keywordsRaw = "";
           item.keywords = [];
+          item.uriPath = item.uriPath || "";
+          item.date = item.date || "";
         }
       }
     }
@@ -545,6 +601,11 @@ app.get("/smug/albums-by-keyword", async (req, res) => {
       Title: a.title,
       url: a.url,
       Url: a.url,
+      // Derived from UriPath segment MMDDYY -> "January 16th, 2026" (best-effort)
+      date: a.date || "",
+      Date: a.date || "",
+      uriPath: a.uriPath || "",
+      UriPath: a.uriPath || "",
       // optional: return raw keywords for debugging if needed
       keywords: a.keywordsRaw
     }));
