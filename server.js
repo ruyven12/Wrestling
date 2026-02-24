@@ -356,6 +356,127 @@ function _normKw(s) {
   return String(s || "").trim().toLowerCase();
 }
 
+
+
+// ===============================
+// SHOWS SHEET LOOKUP (date -> company/show_name)
+// ===============================
+function _csvParse(text) {
+  const rows = [];
+  const lines = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  if (!lines.length) return rows;
+
+  function parseLine(line) {
+    const out = [];
+    let cur = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          // Escaped quote
+          if (i + 1 < line.length && line[i + 1] === '"') {
+            cur += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cur += ch;
+        }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ",") {
+          out.push(cur);
+          cur = "";
+        } else {
+          cur += ch;
+        }
+      }
+    }
+    out.push(cur);
+    return out.map(v => String(v || "").trim());
+  }
+
+  // Find header
+  let header = null;
+  let headerIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    header = parseLine(line).map(h => String(h || "").trim());
+    headerIdx = i;
+    break;
+  }
+  if (!header || headerIdx === -1) return rows;
+
+  const keyIndex = {};
+  for (let i = 0; i < header.length; i++) {
+    const k = String(header[i] || "").trim();
+    if (!k) continue;
+    keyIndex[k] = i;
+  }
+
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    const cols = parseLine(line);
+    const obj = {};
+    for (const k in keyIndex) {
+      obj[k] = cols[keyIndex[k]] || "";
+    }
+    rows.push(obj);
+  }
+  return rows;
+}
+
+function _mmddyyFromShowDate(showDate) {
+  const s = String(showDate || "").trim();
+  if (!s) return "";
+  // Accept M/D/YY, MM/DD/YY, M/D/YYYY, MM/DD/YYYY
+  const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return "";
+  const mm = Number(m[1]);
+  const dd = Number(m[2]);
+  let y = String(m[3]);
+  if (!(mm >= 1 && mm <= 12)) return "";
+  if (!(dd >= 1 && dd <= 31)) return "";
+  if (y.length === 4) y = y.slice(2);
+  if (y.length !== 2) return "";
+  const mm2 = String(mm).padStart(2, "0");
+  const dd2 = String(dd).padStart(2, "0");
+  return `${mm2}${dd2}${y}`;
+}
+
+function _normLoose(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+async function _fetchShowsLookup() {
+  // Builds a lookup map: mmddyy -> [{ company, show_name }...]
+  const map = Object.create(null);
+
+  const r = await fetch(SHOWS_SHEET_URL);
+  const csvText = await r.text();
+  const rows = _csvParse(csvText);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    const company = String(row.company || row.Company || "").trim();
+    const showName = String(row.show_name || row.showName || row.ShowName || row["show_name"] || "").trim();
+    const showDate = String(row.show_date || row.showDate || row.ShowDate || row["show_date"] || "").trim();
+
+    const key = _mmddyyFromShowDate(showDate);
+    if (!key) continue;
+
+    if (!map[key]) map[key] = [];
+    map[key].push({ company, showName });
+  }
+
+  return map;
+}
+
 function _splitKeywords(raw) {
   const s = String(raw || "").trim();
   if (!s) return [];
@@ -523,6 +644,15 @@ async function _buildWrestlingAlbumIndex(force) {
       uniq.push(albums[i]);
     }
 
+    // Fetch shows sheet once per index build (company/show_name lookup)
+    let showsLookup = Object.create(null);
+    try {
+      showsLookup = await _fetchShowsLookup();
+    } catch (e) {
+      // Fail-soft: show metadata is optional
+      showsLookup = Object.create(null);
+    }
+
     // Fetch keywords per album with small concurrency
     const concurrency = Number(process.env.WRESTLING_KEYWORD_CONCURRENCY || 4);
     let idx = 0;
@@ -549,6 +679,28 @@ async function _buildWrestlingAlbumIndex(force) {
           item.uriPath = String(uriPath || "").trim();
           item.date = _prettyDateFromUriPath(item.uriPath);
 
+          // Attach show metadata (company + show name) from Google Sheet by matching date
+          const mmddyy = _extractMmddyyFromUriPath(item.uriPath);
+          const candidates = (mmddyy && showsLookup && showsLookup[mmddyy]) ? showsLookup[mmddyy] : null;
+
+          let picked = null;
+          if (candidates && candidates.length) {
+            if (candidates.length === 1) {
+              picked = candidates[0];
+            } else {
+              const pathNorm = _normLoose(item.uriPath);
+              for (let j = 0; j < candidates.length; j++) {
+                const c = candidates[j] || {};
+                const cn = _normLoose(c.company);
+                if (cn && pathNorm.indexOf(cn) !== -1) { picked = c; break; }
+              }
+              if (!picked) picked = candidates[0];
+            }
+          }
+
+          item.company = picked && picked.company ? String(picked.company) : "";
+          item.showName = picked && picked.showName ? String(picked.showName) : "";
+
           item.keywordsRaw = String(raw || "").trim();
           item.keywords = _splitKeywords(item.keywordsRaw).map(_normKw);
         } catch (e) {
@@ -557,6 +709,8 @@ async function _buildWrestlingAlbumIndex(force) {
           item.keywords = [];
           item.uriPath = item.uriPath || "";
           item.date = item.date || "";
+          item.company = item.company || "";
+          item.showName = item.showName || "";
         }
       }
     }
@@ -614,6 +768,11 @@ app.get("/smug/albums-by-keyword", async (req, res) => {
       // Derived from UriPath segment MMDDYY -> "January 16th, 2026" (best-effort)
       date: a.date || "",
       Date: a.date || "",
+      // Show metadata (from Google Sheet by date; best-effort)
+      company: a.company || "",
+      Company: a.company || "",
+      showName: a.showName || "",
+      ShowName: a.showName || "",
       uriPath: a.uriPath || "",
       UriPath: a.uriPath || "",
       // optional: return raw keywords for debugging if needed
