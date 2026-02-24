@@ -673,13 +673,24 @@ async function _buildWrestlingAlbumIndex(force) {
             (album && typeof album.Keyword === "string") ? album.Keyword :
             "";
 
-          // Capture UriPath (if available) so the frontend can show a show-date.
+                    // Capture UriPath (if available) so the frontend can show a show-date.
           // This is derived from your folder naming convention: /Wrestling/<FED>/MMDDYY/...
           const uriPath = (album && typeof album.UriPath === "string") ? album.UriPath : "";
-          item.uriPath = String(uriPath || "").trim();
-          item.date = _prettyDateFromUriPath(item.uriPath);
 
-          // Attach show metadata (company + show name) from Google Sheet by matching date
+          // Some SmugMug album responses do not include UriPath. Fall back to parsing the web URL pathname.
+          let derivedPath = String(uriPath || "").trim();
+          if (!derivedPath) {
+            try {
+              const u = new URL(String(item.url || "").trim());
+              derivedPath = String(u.pathname || "").trim();
+            } catch (_) {
+              derivedPath = "";
+            }
+          }
+
+          item.uriPath = derivedPath;
+          item.date = _prettyDateFromUriPath(item.uriPath);
+// Attach show metadata (company + show name) from Google Sheet by matching date
           const mmddyy = _extractMmddyyFromUriPath(item.uriPath);
           const candidates = (mmddyy && showsLookup && showsLookup[mmddyy]) ? showsLookup[mmddyy] : null;
 
