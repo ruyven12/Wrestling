@@ -48,6 +48,16 @@ app.use((req, res, next) => {
 app.use(express.static(__dirname));
 app.use(express.json({ limit: "2mb" }));
 
+// =========================================================
+// KEEP-WARM PING ENDPOINT
+// Lightweight health check to prevent Render cold starts
+// =========================================================
+app.get("/ping", (req, res) => {
+  allowCors(res, req);
+  res.status(200).send("OK");
+});
+
+
 
 // SmugMug API Key
 const SMUG_API_KEY = "SQLhhqgXZJd7MzqgVX563bkbjdCfXt9T";
