@@ -185,6 +185,155 @@ app.get("/show-poster", async (req, res) => {
   }
 });
 
+
+
+function _splitPeopleNames(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  const seen = new Set();
+  return s.split(/[;,]/g)
+    .map((v) => String(v || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .filter((name) => {
+      const key = String(name || "").toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function _slugifyPersonName(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function _wrestlingMatchField(row, idx, field) {
+  const n = Number(idx);
+  const keys = [
+    `match-${n}_${field}`,
+    `match_${n}_${field}`,
+    `match-${n}-${field}`,
+    `match_${n}-${field}`,
+    `part_${n}_${field}`,
+  ];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const value = row && Object.prototype.hasOwnProperty.call(row, key) ? row[key] : "";
+    if (value != null && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function _wrestlingShowSlugFromDate(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  let m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (m) {
+    const mm = String(m[1]).padStart(2, "0");
+    const dd = String(m[2]).padStart(2, "0");
+    let yy = String(m[3]);
+    if (yy.length === 4) yy = yy.slice(2);
+    return mm + dd + yy;
+  }
+  m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return String(m[2]) + String(m[3]) + String(m[1]).slice(2);
+  return "";
+}
+
+function _wrestlingMatchSlug(urlCell, idx) {
+  const raw = String(urlCell || "").trim();
+  if (raw && !/^https?:\/\//i.test(raw) && !raw.startsWith("/")) {
+    const clean = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9\-_ ]+/g, "")
+      .replace(/[\s_]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    if (clean) return clean;
+  }
+  return `match-${String(Number(idx) || 1)}`;
+}
+
+app.get('/index/people', async (req, res) => {
+  allowCors(res, req);
+  try {
+    const r = await fetch(SHOWS_SHEET_URL);
+    const csvText = await r.text();
+    const rows = _csvParse(csvText).map((row) => {
+      const out = {};
+      Object.keys(row || {}).forEach((key) => {
+        out[String(key || "").trim().toLowerCase()] = String(row[key] || "").trim();
+      });
+      return out;
+    });
+
+    const people = Object.create(null);
+    let appearanceCount = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      const showDateRaw = String(row.show_date || row.date || "").trim();
+      const showSlug = _wrestlingShowSlugFromDate(showDateRaw);
+      const showTitle = String(row.show_name || row.show || row.title || row.event || row.event_name || "").trim() || (showSlug ? `Show ${showSlug}` : "Show");
+
+      for (let idx = 1; idx <= 12; idx++) {
+        const peopleCell = _wrestlingMatchField(row, idx, 'people');
+        const names = _splitPeopleNames(peopleCell);
+        if (!names.length) continue;
+
+        const type = _wrestlingMatchField(row, idx, 'type');
+        const stip = _wrestlingMatchField(row, idx, 'stip');
+        const partTitle = _wrestlingMatchField(row, idx, 'title');
+        const urlCell = _wrestlingMatchField(row, idx, 'url');
+        const partSlug = _wrestlingMatchSlug(urlCell, idx);
+        const detailTitle = String(stip || partTitle || type || 'Match Album').trim();
+        const route = showSlug ? `/wrestling/shows/${showSlug}/${partSlug}` : '/wrestling/shows';
+
+        for (let j = 0; j < names.length; j++) {
+          const person = names[j];
+          const key = String(person || "").trim().toLowerCase();
+          if (!key) continue;
+          if (!people[key]) {
+            people[key] = {
+              person,
+              slug: _slugifyPersonName(person),
+              appearances: []
+            };
+          }
+          people[key].appearances.push({
+            showTitle,
+            showDate: showDateRaw,
+            partIndex: idx,
+            title: detailTitle,
+            type: type || "",
+            route
+          });
+          appearanceCount += 1;
+        }
+      }
+    }
+
+    Object.keys(people).forEach((key) => {
+      people[key].appearances.sort((a, b) => String(b.showDate || "").localeCompare(String(a.showDate || "")));
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      totalPeople: Object.keys(people).length,
+      totalAppearances: appearanceCount,
+      people
+    });
+  } catch (err) {
+    console.error('/index/people failed:', err);
+    res.status(500).json({ error: 'people index error' });
+  }
+});
 // =========================================================
 // SMART FOLDER → ALBUMS
 // =========================================================
@@ -1177,3 +1326,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
