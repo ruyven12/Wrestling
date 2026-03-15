@@ -260,75 +260,202 @@ function _wrestlingMatchSlug(urlCell, idx) {
   return `match-${String(Number(idx) || 1)}`;
 }
 
-app.get('/index/people', async (req, res) => {
-  allowCors(res, req);
-  try {
-    const r = await fetch(SHOWS_SHEET_URL);
-    const csvText = await r.text();
-    const rows = _csvParse(csvText).map((row) => {
-      const out = {};
-      Object.keys(row || {}).forEach((key) => {
-        out[String(key || "").trim().toLowerCase()] = String(row[key] || "").trim();
-      });
-      return out;
-    });
+const WRESTLING_PEOPLE_INDEX_TTL_MS = Number(process.env.WRESTLING_PEOPLE_INDEX_TTL_MS || (6 * 60 * 60 * 1000));
+let _wrestlingPeopleIndex = { builtAt: 0, payload: null };
+let _wrestlingPeopleIndexPromise = null;
 
+function _parseWrestlingPeopleCaption(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return [];
+  const seen = new Set();
+  const out = [];
+  s.split(";").forEach((part) => {
+    const token = String(part || "").trim();
+    if (!token) return;
+    const key = token.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(token);
+  });
+  return out;
+}
+
+function _extractCaptionOnly(albumImage) {
+  if (!albumImage) return "";
+  const direct = typeof albumImage.Caption === "string" ? albumImage.Caption.trim() : (typeof albumImage.caption === "string" ? albumImage.caption.trim() : "");
+  if (direct) return direct;
+  const nested = albumImage.Image || null;
+  if (!nested) return "";
+  if (typeof nested.Caption === "string" && nested.Caption.trim()) return nested.Caption.trim();
+  if (typeof nested.caption === "string" && nested.caption.trim()) return nested.caption.trim();
+  return "";
+}
+
+function _extractImageKey(albumImage) {
+  return String((albumImage && (albumImage.ImageKey || (albumImage.Image && albumImage.Image.ImageKey) || albumImage.imageKey)) || "").trim();
+}
+
+async function _fetchWrestlingImageCaption(imageKey) {
+  if (!imageKey) return "";
+  try {
+    const detail = await smug(`/image/${encodeURIComponent(imageKey)}-0?_verbosity=1&_expand=Image`);
+    const resp = detail && detail.Response ? detail.Response : detail;
+    const img = resp && resp.Image ? resp.Image : null;
+    if (!img) return "";
+    return String(img.Caption || img.caption || "").trim();
+  } catch (_) {
+    return "";
+  }
+}
+
+async function _fetchWrestlingAlbumImagesAll(albumKey) {
+  const out = [];
+  let start = 1;
+  const count = 200;
+  while (true) {
+    const data = await smug(`/album/${encodeURIComponent(albumKey)}!images?count=${count}&start=${start}&_expand=Image`);
+    const resp = data && data.Response ? data.Response : data;
+    let images = [];
+    if (Array.isArray(resp && resp.AlbumImage)) images = resp.AlbumImage;
+    else if (resp && resp.AlbumImage) images = [resp.AlbumImage];
+    else if (Array.isArray(resp && resp.AlbumImages)) images = resp.AlbumImages;
+    else if (resp && resp.AlbumImages) images = [resp.AlbumImages];
+    images = (images || []).filter(Boolean);
+    if (!images.length) break;
+    out.push(...images);
+    if (images.length < count) break;
+    start += count;
+  }
+  return out;
+}
+
+function _wrestlingRouteFromUriPath(uriPath) {
+  const p = String(uriPath || "").trim();
+  if (!p) return "/wrestling/shows";
+  const parts = p.split("/").filter(Boolean);
+  const mmddyy = _extractMmddyyFromUriPath(p);
+  if (!mmddyy) return "/wrestling/shows";
+  const idx = parts.findIndex((seg) => String(seg || "").trim() === mmddyy);
+  if (idx === -1) return `/wrestling/shows/${mmddyy}`;
+  const next = String(parts[idx + 1] || "").trim();
+  if (!next) return `/wrestling/shows/${mmddyy}`;
+  const slug = next.toLowerCase().replace(/[^a-z0-9\-_ ]+/g, "").replace(/[\s_]+/g, "-").replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return slug ? `/wrestling/shows/${mmddyy}/${slug}` : `/wrestling/shows/${mmddyy}`;
+}
+
+async function _buildWrestlingPeopleIndex(force) {
+  const now = Date.now();
+  if (!force && _wrestlingPeopleIndex.builtAt && (now - _wrestlingPeopleIndex.builtAt) < WRESTLING_PEOPLE_INDEX_TTL_MS && _wrestlingPeopleIndex.payload) {
+    return _wrestlingPeopleIndex.payload;
+  }
+  if (_wrestlingPeopleIndexPromise) return _wrestlingPeopleIndexPromise;
+
+  _wrestlingPeopleIndexPromise = (async () => {
+    const idx = await _buildWrestlingAlbumIndex(force);
+    const albums = Array.isArray(idx && idx.albums) ? idx.albums : [];
     const people = Object.create(null);
     let appearanceCount = 0;
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i] || {};
-      const showDateRaw = String(row.show_date || row.date || "").trim();
-      const showSlug = _wrestlingShowSlugFromDate(showDateRaw);
-      const showTitle = String(row.show_name || row.show || row.title || row.event || row.event_name || "").trim() || (showSlug ? `Show ${showSlug}` : "Show");
+    const concurrency = Number(process.env.WRESTLING_PEOPLE_INDEX_CONCURRENCY || 2);
+    let cursor = 0;
 
-      for (let idx = 1; idx <= 12; idx++) {
-        const peopleCell = _wrestlingMatchField(row, idx, 'people');
-        const names = _splitPeopleNames(peopleCell);
-        if (!names.length) continue;
+    async function worker() {
+      while (cursor < albums.length) {
+        const current = albums[cursor++];
+        const albumKey = String(current && current.albumKey || "").trim();
+        if (!albumKey) continue;
 
-        const type = _wrestlingMatchField(row, idx, 'type');
-        const stip = _wrestlingMatchField(row, idx, 'stip');
-        const partTitle = _wrestlingMatchField(row, idx, 'title');
-        const urlCell = _wrestlingMatchField(row, idx, 'url');
-        const partSlug = _wrestlingMatchSlug(urlCell, idx);
-        const detailTitle = String(stip || partTitle || type || 'Match Album').trim();
-        const route = showSlug ? `/wrestling/shows/${showSlug}/${partSlug}` : '/wrestling/shows';
+        let images = [];
+        try {
+          images = await _fetchWrestlingAlbumImagesAll(albumKey);
+        } catch (_) {
+          images = [];
+        }
+        if (!images.length) continue;
 
-        for (let j = 0; j < names.length; j++) {
-          const person = names[j];
-          const key = String(person || "").trim().toLowerCase();
-          if (!key) continue;
+        const perAlbum = Object.create(null);
+        for (let i = 0; i < images.length; i++) {
+          const img = images[i] || {};
+          let caption = _extractCaptionOnly(img);
+          if (!caption) {
+            const imageKey = _extractImageKey(img);
+            if (imageKey) caption = await _fetchWrestlingImageCaption(imageKey);
+          }
+          const names = _parseWrestlingPeopleCaption(caption);
+          if (!names.length) continue;
+          for (let j = 0; j < names.length; j++) {
+            const person = names[j];
+            const key = String(person || "").trim().toLowerCase();
+            if (!key) continue;
+            perAlbum[key] = perAlbum[key] || { person, photoCount: 0 };
+            perAlbum[key].photoCount += 1;
+          }
+        }
+
+        const showTitle = String(current.showName || current.company || current.title || "").trim() || "Show";
+        const detailTitle = String(current.title || "").trim() || "Album";
+        const showDate = String(current.date || "").trim();
+        const route = _wrestlingRouteFromUriPath(String(current.uriPath || "").trim());
+        const albumUrl = String(current.url || "").trim();
+
+        Object.keys(perAlbum).forEach((key) => {
+          const entry = perAlbum[key] || {};
           if (!people[key]) {
             people[key] = {
-              person,
-              slug: _slugifyPersonName(person),
+              person: entry.person,
+              slug: _slugifyPersonName(entry.person),
+              photoCount: 0,
               appearances: []
             };
           }
+          people[key].photoCount += Number(entry.photoCount || 0);
           people[key].appearances.push({
             showTitle,
-            showDate: showDateRaw,
-            partIndex: idx,
+            showDate,
             title: detailTitle,
-            type: type || "",
-            route
+            route,
+            albumUrl,
+            albumKey,
+            photoCount: Number(entry.photoCount || 0)
           });
           appearanceCount += 1;
-        }
+        });
       }
     }
+
+    const workers = [];
+    for (let i = 0; i < Math.max(1, concurrency); i++) workers.push(worker());
+    await Promise.all(workers);
 
     Object.keys(people).forEach((key) => {
       people[key].appearances.sort((a, b) => String(b.showDate || "").localeCompare(String(a.showDate || "")));
     });
 
-    res.json({
+    const payload = {
       generatedAt: new Date().toISOString(),
       totalPeople: Object.keys(people).length,
       totalAppearances: appearanceCount,
       people
-    });
+    };
+
+    _wrestlingPeopleIndex = { builtAt: Date.now(), payload };
+    _wrestlingPeopleIndexPromise = null;
+    return payload;
+  })();
+
+  try {
+    return await _wrestlingPeopleIndexPromise;
+  } finally {
+    _wrestlingPeopleIndexPromise = null;
+  }
+}
+
+app.get('/index/people', async (req, res) => {
+  allowCors(res, req);
+  const force = String(req.query.force || "").trim() === "1";
+  try {
+    const payload = await _buildWrestlingPeopleIndex(force);
+    res.json(payload);
   } catch (err) {
     console.error('/index/people failed:', err);
     res.status(500).json({ error: 'people index error' });
@@ -1326,5 +1453,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
