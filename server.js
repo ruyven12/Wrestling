@@ -433,6 +433,8 @@ async function _buildWrestlingPeopleIndex(force) {
 
     const payload = {
       generatedAt: new Date().toISOString(),
+      debugSource: 'caption-only-v1',
+      debugCaptionOnly: true,
       totalPeople: Object.keys(people).length,
       totalAppearances: appearanceCount,
       people
@@ -1453,6 +1455,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
