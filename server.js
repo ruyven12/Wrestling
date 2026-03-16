@@ -261,8 +261,32 @@ function _wrestlingMatchSlug(urlCell, idx) {
 }
 
 const WRESTLING_PEOPLE_INDEX_TTL_MS = Number(process.env.WRESTLING_PEOPLE_INDEX_TTL_MS || (6 * 60 * 60 * 1000));
+const WRESTLING_PEOPLE_INDEX_FILE = path.join(__dirname, "_tmp_wrestling_people_index.json");
 let _wrestlingPeopleIndex = { builtAt: 0, payload: null };
 let _wrestlingPeopleIndexPromise = null;
+
+function _loadWrestlingPeopleIndexSnapshot() {
+  try {
+    if (!fs.existsSync(WRESTLING_PEOPLE_INDEX_FILE)) return null;
+    const raw = fs.readFileSync(WRESTLING_PEOPLE_INDEX_FILE, "utf8");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !parsed.people) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _saveWrestlingPeopleIndexSnapshot(payload) {
+  try {
+    fs.writeFileSync(WRESTLING_PEOPLE_INDEX_FILE, JSON.stringify(payload, null, 2));
+    return true;
+  } catch (err) {
+    console.error("failed to save wrestling people snapshot:", err);
+    return false;
+  }
+}
 
 function _parseWrestlingPeopleCaption(raw) {
   const s = String(raw || "").trim();
@@ -440,6 +464,7 @@ async function _buildWrestlingPeopleIndex(force) {
       people
     };
 
+    _saveWrestlingPeopleIndexSnapshot(payload);
     _wrestlingPeopleIndex = { builtAt: Date.now(), payload };
     _wrestlingPeopleIndexPromise = null;
     return payload;
@@ -456,8 +481,21 @@ app.get('/index/people', async (req, res) => {
   allowCors(res, req);
   const force = String(req.query.force || "").trim() === "1";
   try {
-    const payload = await _buildWrestlingPeopleIndex(force);
-    res.json(payload);
+    if (!force) {
+      const snapshot = _loadWrestlingPeopleIndexSnapshot();
+      if (snapshot) {
+        _wrestlingPeopleIndex = { builtAt: Date.now(), payload: snapshot };
+        return res.json(Object.assign({}, snapshot, { cache: { hit: true, layer: 'file' } }));
+      }
+      return res.status(503).json({
+        error: 'people index cache unavailable',
+        message: 'No cached People index is available yet. Use force=1 to rebuild.',
+        cache: { hit: false, layer: 'none' }
+      });
+    }
+
+    const payload = await _buildWrestlingPeopleIndex(true);
+    return res.json(Object.assign({}, payload, { cache: { hit: false, layer: 'rebuilt' } }));
   } catch (err) {
     console.error('/index/people failed:', err);
     res.status(500).json({ error: 'people index error' });
@@ -1455,6 +1493,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
