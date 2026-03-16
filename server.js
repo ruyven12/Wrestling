@@ -2,6 +2,8 @@ console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX
 
 const express = require("express");
 const archiver = require("archiver");
+const fs = require("fs");
+const path = require("path");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
