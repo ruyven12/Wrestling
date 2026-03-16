@@ -179,7 +179,7 @@ const WRESTLING_SHOWS_SHEET_URL =
 
 // Wrestling people CSV (People tab)
 const WRESTLING_PEOPLE_SHEET_URL =
-  "https://docs.google.com/spreadsheets/d/1t8UBLZZRZFDlklxcx6uemgGjros_n42KbVKIV-qIAjs/export?format=csv&gid=1853953954";
+  "https://docs.google.com/spreadsheets/d/e/2PACX-1vTTGNw3uAMsoML1yS4d12v8FKwrAZQK0OSuZkoml3cQT2s_KEQa7Qs5flD0c_zjJnR2Qy5D465-_6F8/pub?gid=1853953954&single=true&output=csv";
 
 // Default /sheet/shows source. For the wrestling server, this should be Wrestling.
 // You can override via env SHOWS_SHEET_URL if you deploy a music-only instance.
@@ -247,6 +247,9 @@ app.get("/sheet/people", async (req, res) => {
   try {
     const r = await fetch(PEOPLE_SHEET_URL);
     const csv = await r.text();
+    if (!r.ok || /^\s*</.test(csv)) {
+      throw new Error(`people sheet upstream returned ${r.status || 500}`);
+    }
     allowCors(res, req);
     res.type("text/plain").send(csv);
   } catch (err) {
