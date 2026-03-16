@@ -7,6 +7,7 @@ const path = require("path");
 const http = require("http");
 const https = require("https");
 const { URL } = require("url");
+const crypto = require("crypto");
 const app = express();
 
 // =========================================================
@@ -63,6 +64,57 @@ app.get("/ping", (req, res) => {
 
 // SmugMug API Key
 const SMUG_API_KEY = "SQLhhqgXZJd7MzqgVX563bkbjdCfXt9T";
+
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "101815");
+const ADMIN_TOKEN_SECRET = String(process.env.ADMIN_TOKEN_SECRET || "vm-admin-dev-secret");
+const ADMIN_TOKEN_TTL_MS = Number(process.env.ADMIN_TOKEN_TTL_MS || (8 * 60 * 60 * 1000));
+
+function _adminSafeEqual(a, b) {
+  const aa = Buffer.from(String(a || ""), "utf8");
+  const bb = Buffer.from(String(b || ""), "utf8");
+  if (aa.length !== bb.length) return false;
+  try {
+    return crypto.timingSafeEqual(aa, bb);
+  } catch (_) {
+    return false;
+  }
+}
+
+function _createAdminToken() {
+  const payload = {
+    v: 1,
+    exp: Date.now() + Math.max(60 * 1000, ADMIN_TOKEN_TTL_MS)
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", ADMIN_TOKEN_SECRET).update(encoded).digest("base64url");
+  return `${encoded}.${sig}`;
+}
+
+function _verifyAdminToken(token) {
+  const raw = String(token || "").trim();
+  if (!raw || raw.indexOf(".") === -1) return null;
+  const parts = raw.split(".");
+  const encoded = parts[0] || "";
+  const sig = parts[1] || "";
+  if (!encoded || !sig) return null;
+  const expected = crypto.createHmac("sha256", ADMIN_TOKEN_SECRET).update(encoded).digest("base64url");
+  if (!_adminSafeEqual(sig, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!payload || typeof payload !== "object") return null;
+    const exp = Number(payload.exp || 0);
+    if (!exp || Date.now() > exp) return null;
+    return payload;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _readAdminBearerToken(req) {
+  const auth = String((req && req.headers && req.headers.authorization) || "").trim();
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return String((req && req.query && req.query.token) || "").trim();
+}
 
 // Google Sheets (your existing CSV sources)
 const BANDS_SHEET_URL =
@@ -1495,6 +1547,8 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
+
 
 
 
