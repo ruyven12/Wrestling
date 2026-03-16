@@ -116,6 +116,55 @@ function _readAdminBearerToken(req) {
   return String((req && req.query && req.query.token) || "").trim();
 }
 
+app.post("/admin/auth", (req, res) => {
+  allowCors(res, req);
+  const password = String((req.body && req.body.password) || "").trim();
+  if (!_adminSafeEqual(password, ADMIN_PASSWORD)) {
+    return res.status(401).json({ ok: false, error: "invalid password" });
+  }
+  const token = _createAdminToken();
+  const payload = _verifyAdminToken(token);
+  return res.json({
+    ok: true,
+    token,
+    expiresAt: payload && payload.exp ? new Date(payload.exp).toISOString() : null
+  });
+});
+
+app.get("/admin/verify", (req, res) => {
+  allowCors(res, req);
+  const token = _readAdminBearerToken(req);
+  const payload = _verifyAdminToken(token);
+  if (!payload) {
+    return res.status(401).json({ ok: false, error: "invalid token" });
+  }
+  return res.json({
+    ok: true,
+    expiresAt: payload.exp ? new Date(payload.exp).toISOString() : null
+  });
+});
+
+app.post("/admin/people-index/rebuild", async (req, res) => {
+  allowCors(res, req);
+  const token = _readAdminBearerToken(req);
+  const payload = _verifyAdminToken(token);
+  if (!payload) {
+    return res.status(401).json({ ok: false, error: "invalid token" });
+  }
+  try {
+    const rebuilt = await _buildWrestlingPeopleIndex(true);
+    return res.json({
+      ok: true,
+      generatedAt: rebuilt && rebuilt.generatedAt ? rebuilt.generatedAt : null,
+      totalPeople: Number(rebuilt && rebuilt.totalPeople || 0),
+      totalAppearances: Number(rebuilt && rebuilt.totalAppearances || 0)
+    });
+  } catch (err) {
+    console.error('/admin/people-index/rebuild failed:', err);
+    return res.status(500).json({ ok: false, error: 'rebuild failed' });
+  }
+});
+
 // Google Sheets (your existing CSV sources)
 const BANDS_SHEET_URL =
   "https://docs.google.com/spreadsheets/d/e/2PACX-1vTdi19qTDyPeBGzq0PpkdlDS_bNg34XpdRiXy8aBa-Jlu-jg2Wzkj1SnLXtRVFU4TGOh5KHJPK8Lwhc/pub?gid=0&single=true&output=csv";
@@ -1547,6 +1596,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
