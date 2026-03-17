@@ -232,6 +232,18 @@ function _readAnalyticsEvents() {
   }
 }
 
+function _clearAnalyticsEvents() {
+  try {
+    if (fs.existsSync(ANALYTICS_EVENTS_FILE)) {
+      fs.unlinkSync(ANALYTICS_EVENTS_FILE);
+    }
+    return true;
+  } catch (err) {
+    console.error("analytics clear failed:", err);
+    return false;
+  }
+}
+
 function _rangeCutoff(range) {
   const now = Date.now();
   if (range === "24h") return now - (24 * 60 * 60 * 1000);
@@ -479,6 +491,29 @@ app.get("/admin/analytics/events", (req, res) => {
   } catch (err) {
     console.error("/admin/analytics/events failed:", err);
     return res.status(500).json({ ok: false, error: "events failed" });
+  }
+});
+
+app.post("/admin/analytics/reset", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const beforeCount = _readAnalyticsEvents().length;
+    const ok = _clearAnalyticsEvents();
+    const afterCount = _readAnalyticsEvents().length;
+    if (!ok || afterCount !== 0) {
+      return res.status(500).json({ ok: false, error: "reset failed" });
+    }
+    return res.json({
+      ok: true,
+      cleared: true,
+      beforeCount,
+      afterCount,
+      clearedAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error("/admin/analytics/reset failed:", err);
+    return res.status(500).json({ ok: false, error: "reset failed" });
   }
 });
 
