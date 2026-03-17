@@ -10,6 +10,9 @@ const { URL } = require("url");
 const crypto = require("crypto");
 const app = express();
 
+const ANALYTICS_DIR = path.join(__dirname, "data");
+const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, "analytics-events.ndjson");
+
 // =========================================================
 // UNIVERSAL CORS
 // =========================================================
@@ -116,6 +119,158 @@ function _readAdminBearerToken(req) {
   return String((req && req.query && req.query.token) || "").trim();
 }
 
+function _requireAdmin(req, res) {
+  const token = _readAdminBearerToken(req);
+  const payload = _verifyAdminToken(token);
+  if (!payload) {
+    res.status(401).json({ ok: false, error: "invalid token" });
+    return null;
+  }
+  return payload;
+}
+
+function _ensureAnalyticsDir() {
+  try {
+    fs.mkdirSync(ANALYTICS_DIR, { recursive: true });
+  } catch (_) {}
+}
+
+function _safeString(value, maxLen) {
+  const out = String(value == null ? "" : value).trim();
+  return out.slice(0, Math.max(0, Number(maxLen) || out.length));
+}
+
+function _safeNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function _safeMeta(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  try {
+    const text = JSON.stringify(value);
+    if (!text) return {};
+    if (text.length > 12000) return { truncated: true };
+    return JSON.parse(text);
+  } catch (_) {
+    return {};
+  }
+}
+
+function _normalizeAnalyticsEvent(input) {
+  const body = input && typeof input === "object" ? input : {};
+  const eventName = _safeString(body.event_name, 80);
+  const occurredAt = _safeString(body.occurred_at, 64);
+  const sessionId = _safeString(body.session_id, 120);
+  const visitorId = _safeString(body.visitor_id, 120);
+  const route = _safeString(body.route, 240);
+  const section = _safeString(body.section, 48);
+  const source = _safeString(body.source, 64);
+  const eventVersion = _safeNumber(body.event_version, 0);
+
+  if (!eventName || !occurredAt || !sessionId || !visitorId || !route || !section || !source || !eventVersion) {
+    return null;
+  }
+
+  return {
+    id: "evt_" + crypto.randomBytes(12).toString("hex"),
+    received_at: new Date().toISOString(),
+    event_name: eventName,
+    occurred_at: occurredAt,
+    client_time: _safeString(body.client_time, 120),
+    session_id: sessionId,
+    visitor_id: visitorId,
+    pageview_id: _safeString(body.pageview_id, 120),
+    route,
+    pathname: _safeString(body.pathname, 240),
+    hash: _safeString(body.hash, 160),
+    section,
+    subsection: _safeString(body.subsection, 48),
+    source,
+    event_version: eventVersion,
+    referrer: _safeString(body.referrer, 400),
+    utm_source: _safeString(body.utm_source, 120),
+    utm_medium: _safeString(body.utm_medium, 120),
+    utm_campaign: _safeString(body.utm_campaign, 160),
+    utm_term: _safeString(body.utm_term, 160),
+    utm_content: _safeString(body.utm_content, 160),
+    device_type: _safeString(body.device_type, 24),
+    viewport_w: _safeNumber(body.viewport_w, 0),
+    viewport_h: _safeNumber(body.viewport_h, 0),
+    language: _safeString(body.language, 32),
+    timezone: _safeString(body.timezone, 80),
+    entity_type: _safeString(body.entity_type, 48),
+    entity_id: _safeString(body.entity_id, 240),
+    entity_label: _safeString(body.entity_label, 240),
+    meta: _safeMeta(body.meta)
+  };
+}
+
+function _appendAnalyticsEvents(events) {
+  if (!Array.isArray(events) || !events.length) return;
+  _ensureAnalyticsDir();
+  const lines = events.map((evt) => JSON.stringify(evt)).join("\n") + "\n";
+  fs.appendFileSync(ANALYTICS_EVENTS_FILE, lines, "utf8");
+}
+
+function _readAnalyticsEvents() {
+  try {
+    if (!fs.existsSync(ANALYTICS_EVENTS_FILE)) return [];
+    const raw = fs.readFileSync(ANALYTICS_EVENTS_FILE, "utf8");
+    if (!raw.trim()) return [];
+    return raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try { return JSON.parse(line); } catch (_) { return null; }
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.error("analytics read failed:", err);
+    return [];
+  }
+}
+
+function _rangeCutoff(range) {
+  const now = Date.now();
+  if (range === "24h") return now - (24 * 60 * 60 * 1000);
+  if (range === "30d") return now - (30 * 24 * 60 * 60 * 1000);
+  return now - (7 * 24 * 60 * 60 * 1000);
+}
+
+function _filterAnalyticsEvents(events, opts) {
+  const options = opts || {};
+  const cutoff = _rangeCutoff(_safeString(options.range, 12) || "7d");
+  const section = _safeString(options.section, 48);
+  const eventName = _safeString(options.event_name, 80);
+  const entityType = _safeString(options.entity_type, 48);
+  return (Array.isArray(events) ? events : []).filter((evt) => {
+    const when = Date.parse(String(evt && evt.occurred_at || evt && evt.received_at || ""));
+    if (!Number.isFinite(when) || when < cutoff) return false;
+    if (section && String(evt.section || "") !== section) return false;
+    if (eventName && String(evt.event_name || "") !== eventName) return false;
+    if (entityType && String(evt.entity_type || "") !== entityType) return false;
+    return true;
+  });
+}
+
+function _countDistinct(events, key) {
+  const set = new Set();
+  (events || []).forEach((evt) => {
+    const value = _safeString(evt && evt[key], 240);
+    if (value) set.add(value);
+  });
+  return set.size;
+}
+
+function _toTopItems(map, limit, formatter) {
+  return Array.from(map.entries())
+    .sort((a, b) => b[1].events - a[1].events)
+    .slice(0, Math.max(1, Number(limit) || 25))
+    .map(([key, value]) => formatter(key, value));
+}
+
 app.post("/admin/auth", (req, res) => {
   allowCors(res, req);
   const password = String((req.body && req.body.password) || "").trim();
@@ -162,6 +317,168 @@ app.post("/admin/people-index/rebuild", async (req, res) => {
   } catch (err) {
     console.error('/admin/people-index/rebuild failed:', err);
     return res.status(500).json({ ok: false, error: 'rebuild failed' });
+  }
+});
+
+app.post("/analytics/collect", (req, res) => {
+  allowCors(res, req);
+  try {
+    const evt = _normalizeAnalyticsEvent(req.body);
+    if (!evt) {
+      return res.status(400).json({ ok: false, error: "invalid event" });
+    }
+    _appendAnalyticsEvents([evt]);
+    return res.json({ ok: true, ingested: 1 });
+  } catch (err) {
+    console.error("/analytics/collect failed:", err);
+    return res.status(500).json({ ok: false, error: "collect failed" });
+  }
+});
+
+app.post("/analytics/batch", (req, res) => {
+  allowCors(res, req);
+  try {
+    const rawEvents = Array.isArray(req.body && req.body.events) ? req.body.events.slice(0, 100) : [];
+    const normalized = rawEvents.map(_normalizeAnalyticsEvent).filter(Boolean);
+    _appendAnalyticsEvents(normalized);
+    return res.json({
+      ok: true,
+      accepted: normalized.length,
+      rejected: Math.max(0, rawEvents.length - normalized.length)
+    });
+  } catch (err) {
+    console.error("/analytics/batch failed:", err);
+    return res.status(500).json({ ok: false, error: "batch failed" });
+  }
+});
+
+app.get("/admin/analytics/overview", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const range = _safeString(req.query && req.query.range, 12) || "7d";
+    const events = _filterAnalyticsEvents(_readAnalyticsEvents(), { range });
+    const sections = new Map();
+    let lastIngestAt = "";
+
+    events.forEach((evt) => {
+      const key = String(evt.section || "unknown");
+      const entry = sections.get(key) || { section: key, pageviews: 0, events: 0 };
+      entry.events += 1;
+      if (String(evt.event_name || "") === "page_view") entry.pageviews += 1;
+      sections.set(key, entry);
+      const receivedAt = String(evt.received_at || "");
+      if (receivedAt && (!lastIngestAt || receivedAt > lastIngestAt)) lastIngestAt = receivedAt;
+    });
+
+    return res.json({
+      ok: true,
+      range,
+      totals: {
+        events: events.length,
+        pageviews: events.filter((evt) => String(evt.event_name || "") === "page_view").length,
+        visitors: _countDistinct(events, "visitor_id"),
+        sessions: _countDistinct(events, "session_id")
+      },
+      sections: Array.from(sections.values()).sort((a, b) => b.events - a.events),
+      lastIngestAt: lastIngestAt || null
+    });
+  } catch (err) {
+    console.error("/admin/analytics/overview failed:", err);
+    return res.status(500).json({ ok: false, error: "overview failed" });
+  }
+});
+
+app.get("/admin/analytics/routes", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const range = _safeString(req.query && req.query.range, 12) || "7d";
+    const limit = _safeNumber(req.query && req.query.limit, 25);
+    const events = _filterAnalyticsEvents(_readAnalyticsEvents(), { range });
+    const routes = new Map();
+
+    events.forEach((evt) => {
+      const key = String(evt.route || "");
+      if (!key) return;
+      const entry = routes.get(key) || { route: key, section: String(evt.section || ""), pageviews: 0, events: 0 };
+      entry.events += 1;
+      if (String(evt.event_name || "") === "page_view") entry.pageviews += 1;
+      routes.set(key, entry);
+    });
+
+    return res.json({
+      ok: true,
+      items: Array.from(routes.values())
+        .sort((a, b) => b.events - a.events)
+        .slice(0, Math.max(1, limit))
+    });
+  } catch (err) {
+    console.error("/admin/analytics/routes failed:", err);
+    return res.status(500).json({ ok: false, error: "routes failed" });
+  }
+});
+
+app.get("/admin/analytics/entities", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const range = _safeString(req.query && req.query.range, 12) || "7d";
+    const limit = _safeNumber(req.query && req.query.limit, 25);
+    const entityType = _safeString(req.query && req.query.entity_type, 48);
+    const events = _filterAnalyticsEvents(_readAnalyticsEvents(), { range, entity_type: entityType });
+    const entities = new Map();
+
+    events.forEach((evt) => {
+      const type = String(evt.entity_type || "");
+      const id = String(evt.entity_id || "");
+      if (!type || !id) return;
+      const key = type + "::" + id;
+      const entry = entities.get(key) || {
+        entity_type: type,
+        entity_id: id,
+        entity_label: String(evt.entity_label || id),
+        events: 0
+      };
+      entry.events += 1;
+      entities.set(key, entry);
+    });
+
+    return res.json({
+      ok: true,
+      items: Array.from(entities.values())
+        .sort((a, b) => b.events - a.events)
+        .slice(0, Math.max(1, limit))
+    });
+  } catch (err) {
+    console.error("/admin/analytics/entities failed:", err);
+    return res.status(500).json({ ok: false, error: "entities failed" });
+  }
+});
+
+app.get("/admin/analytics/events", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const range = _safeString(req.query && req.query.range, 12) || "7d";
+    const limit = _safeNumber(req.query && req.query.limit, 100);
+    const section = _safeString(req.query && req.query.section, 48);
+    const eventName = _safeString(req.query && req.query.event_name, 80);
+    const events = _filterAnalyticsEvents(_readAnalyticsEvents(), {
+      range,
+      section,
+      event_name: eventName
+    });
+
+    return res.json({
+      ok: true,
+      items: events
+        .sort((a, b) => String(b.occurred_at || b.received_at || "").localeCompare(String(a.occurred_at || a.received_at || "")))
+        .slice(0, Math.max(1, limit))
+    });
+  } catch (err) {
+    console.error("/admin/analytics/events failed:", err);
+    return res.status(500).json({ ok: false, error: "events failed" });
   }
 });
 
