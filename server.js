@@ -209,6 +209,7 @@ function _normalizeAnalyticsEvent(input) {
 function _appendAnalyticsEvents(events) {
   if (!Array.isArray(events) || !events.length) return;
   _ensureAnalyticsDir();
+  console.log("[analytics append] count:", events.length, "file:", ANALYTICS_EVENTS_FILE);
   const lines = events.map((evt) => JSON.stringify(evt)).join("\n") + "\n";
   fs.appendFileSync(ANALYTICS_EVENTS_FILE, lines, "utf8");
 }
@@ -498,18 +499,45 @@ app.post("/admin/analytics/reset", (req, res) => {
   allowCors(res, req);
   if (!_requireAdmin(req, res)) return;
   try {
+    console.log("[analytics reset] request received");
+    console.log("[analytics reset] file:", ANALYTICS_EVENTS_FILE);
     const beforeCount = _readAnalyticsEvents().length;
-    const ok = _clearAnalyticsEvents();
+    console.log("[analytics reset] before:", beforeCount);
+
+    _ensureAnalyticsDir();
+
+    let ok = false;
+    try {
+      if (fs.existsSync(ANALYTICS_EVENTS_FILE)) {
+        fs.unlinkSync(ANALYTICS_EVENTS_FILE);
+      }
+      ok = true;
+    } catch (unlinkErr) {
+      console.error("[analytics reset] unlink failed:", unlinkErr);
+      try {
+        fs.writeFileSync(ANALYTICS_EVENTS_FILE, "", "utf8");
+        ok = true;
+      } catch (truncateErr) {
+        console.error("[analytics reset] truncate failed:", truncateErr);
+      }
+    }
+
     const afterCount = _readAnalyticsEvents().length;
+    console.log("[analytics reset] after:", afterCount);
     if (!ok || afterCount !== 0) {
-      return res.status(500).json({ ok: false, error: "reset failed" });
+      return res.status(500).json({
+        ok: false,
+        error: "reset failed",
+        beforeCount,
+        afterCount
+      });
     }
     return res.json({
       ok: true,
-      cleared: true,
       beforeCount,
       afterCount,
-      clearedAt: new Date().toISOString()
+      clearedAt: new Date().toISOString(),
+      file: ANALYTICS_EVENTS_FILE
     });
   } catch (err) {
     console.error("/admin/analytics/reset failed:", err);
