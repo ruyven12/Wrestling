@@ -634,6 +634,7 @@ app.get('/index/shows', async (req, res) => {
         throw new Error('shows sheet upstream returned ' + (upstream.status || 500));
       }
       const payload = _buildWrestlingShowIndexPayload(csv);
+      _saveWrestlingShowIndexSnapshot(payload);
       return res.json(payload);
     }
 
@@ -795,6 +796,7 @@ function _wrestlingMatchSlug(urlCell, idx) {
 
 const WRESTLING_PEOPLE_INDEX_TTL_MS = Number(process.env.WRESTLING_PEOPLE_INDEX_TTL_MS || (6 * 60 * 60 * 1000));
 const WRESTLING_PEOPLE_INDEX_FILE = path.join(__dirname, "_tmp_wrestling_people_index.json");
+const WRESTLING_SHOW_INDEX_FILE = path.join(__dirname, "_tmp_wrestling_show_index.json");
 let _wrestlingPeopleIndex = { builtAt: 0, payload: null };
 let _wrestlingPeopleIndexPromise = null;
 
@@ -831,6 +833,16 @@ function _loadWrestlingShowIndexSnapshot() {
     return parsed;
   } catch (_) {
     return null;
+  }
+}
+
+function _saveWrestlingShowIndexSnapshot(payload) {
+  try {
+    fs.writeFileSync(WRESTLING_SHOW_INDEX_FILE, JSON.stringify(payload, null, 2));
+    return true;
+  } catch (err) {
+    console.error("failed to save wrestling show snapshot:", err);
+    return false;
   }
 }
 
