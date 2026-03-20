@@ -623,6 +623,35 @@ app.get("/sheet/shows", async (req, res) => {
   }
 });
 
+app.get('/index/shows', async (req, res) => {
+  allowCors(res, req);
+  try {
+    const force = String(req.query.force || '').trim() === '1';
+    if (force) {
+      const upstream = await fetch(SHOWS_SHEET_URL, { headers: { Accept: 'text/plain,text/csv;q=0.9,*/*;q=0.8', 'Cache-Control': 'no-cache' } });
+      const csv = await upstream.text();
+      if (!upstream.ok || /^\s*</.test(csv)) {
+        throw new Error('shows sheet upstream returned ' + (upstream.status || 500));
+      }
+      const payload = _buildWrestlingShowIndexPayload(csv);
+      return res.json(payload);
+    }
+
+    const snapshot = _loadWrestlingShowIndexSnapshot();
+    if (snapshot) {
+      return res.json(snapshot);
+    }
+
+    return res.status(503).json({
+      error: 'show index unavailable',
+      message: 'No Wrestling show snapshot is available yet. Use force=1 to generate a fresh export.'
+    });
+  } catch (err) {
+    console.error('/index/shows failed:', err);
+    res.status(500).json({ error: 'show index error' });
+  }
+});
+
 app.get("/sheet/people", async (req, res) => {
   try {
     const r = await fetch(PEOPLE_SHEET_URL);
@@ -790,6 +819,46 @@ function _saveWrestlingPeopleIndexSnapshot(payload) {
     console.error("failed to save wrestling people snapshot:", err);
     return false;
   }
+}
+
+function _loadWrestlingShowIndexSnapshot() {
+  try {
+    if (!fs.existsSync(WRESTLING_SHOW_INDEX_FILE)) return null;
+    const raw = fs.readFileSync(WRESTLING_SHOW_INDEX_FILE, "utf8");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.shows)) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _buildWrestlingShowIndexPayload(csvText) {
+  const { header, rows } = parseCsvSimple(csvText);
+  const headerLower = header.map((h) => String(h || '').trim().toLowerCase());
+  const shows = rows.map((cols) => {
+    const row = {};
+    header.forEach((colName, i) => {
+      const key = String(colName || '').trim().toLowerCase();
+      if (!key) return;
+      row[key] = String(cols[i] || '').trim();
+    });
+    const showName = String(row.show_name || row.title || row.event || '').trim();
+    const showDate = String(row.show_date || row.date || '').trim();
+    return Object.assign({}, row, {
+      title: showName,
+      show_name: showName,
+      date: showDate,
+      show_date: showDate
+    });
+  }).filter((row) => String(row.show_name || row.title || '').trim());
+
+  return {
+    generatedAt: new Date().toISOString(),
+    count: shows.length,
+    shows
+  };
 }
 
 function _parseWrestlingPeopleCaption(raw) {
