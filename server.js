@@ -795,7 +795,7 @@ function _wrestlingMatchSlug(urlCell, idx) {
 }
 
 const WRESTLING_PEOPLE_INDEX_TTL_MS = Number(process.env.WRESTLING_PEOPLE_INDEX_TTL_MS || (6 * 60 * 60 * 1000));
-const WRESTLING_PEOPLE_INDEX_FILE = path.join(__dirname, "_tmp_wrestling_people_index.json");
+const WRESTLING_PEOPLE_INDEX_FILE = path.join(__dirname, "index", "people-index.json");
 const WRESTLING_SHOW_INDEX_FILE = path.join(__dirname, "_tmp_wrestling_show_index.json");
 let _wrestlingPeopleIndex = { builtAt: 0, payload: null };
 let _wrestlingPeopleIndexPromise = null;
@@ -815,6 +815,7 @@ function _loadWrestlingPeopleIndexSnapshot() {
 
 function _saveWrestlingPeopleIndexSnapshot(payload) {
   try {
+    fs.mkdirSync(path.dirname(WRESTLING_PEOPLE_INDEX_FILE), { recursive: true });
     fs.writeFileSync(WRESTLING_PEOPLE_INDEX_FILE, JSON.stringify(payload, null, 2));
     return true;
   } catch (err) {
