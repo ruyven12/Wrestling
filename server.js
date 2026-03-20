@@ -847,15 +847,15 @@ function _saveWrestlingShowIndexSnapshot(payload) {
 }
 
 function _buildWrestlingShowIndexPayload(csvText) {
-  const { header, rows } = parseCsvSimple(csvText);
-  const headerLower = header.map((h) => String(h || '').trim().toLowerCase());
-  const shows = rows.map((cols) => {
+  const rows = _csvParse(csvText);
+  const shows = rows.map((sourceRow) => {
     const row = {};
-    header.forEach((colName, i) => {
-      const key = String(colName || '').trim().toLowerCase();
-      if (!key) return;
-      row[key] = String(cols[i] || '').trim();
+    Object.keys(sourceRow || {}).forEach((key) => {
+      const normalizedKey = String(key || "").trim().toLowerCase();
+      if (!normalizedKey) return;
+      row[normalizedKey] = String(sourceRow[key] || "").trim();
     });
+
     const showName = String(row.show_name || row.title || row.event || '').trim();
     const showDate = String(row.show_date || row.date || '').trim();
     return Object.assign({}, row, {
