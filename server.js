@@ -261,6 +261,10 @@ function _facebookPageSummaries(pages) {
   }));
 }
 
+function _facebookDebugEnabled() {
+  return String(process.env.FACEBOOK_DEBUG_MODE || "").trim() === "1";
+}
+
 function _buildFacebookOauthAuthorizeUrl(returnTo) {
   const state = _createFacebookOauthState({
     iat: Date.now(),
@@ -462,6 +466,7 @@ app.get("/__vm/diagnostics", (req, res) => {
       redirect_uri_configured: !!META_REDIRECT_URI,
       oauth_success_redirect_configured: !!META_OAUTH_SUCCESS_REDIRECT,
       oauth_error_redirect_configured: !!META_OAUTH_ERROR_REDIRECT,
+      debug_mode: _facebookDebugEnabled(),
       graph_version: META_GRAPH_VERSION || null
     }
   });
@@ -758,15 +763,16 @@ app.post("/admin/facebook/connect/start", (req, res) => {
 
 app.get("/admin/facebook/connect/callback", async (req, res) => {
   allowCors(res, req);
-  const fail = (errorMessage, payload) => {
+  const fail = (errorMessage, payload, extraParams) => {
     const message = _safeString(errorMessage, 240) || "facebook connect failed";
     const statePayload = payload && typeof payload === "object" ? payload : null;
     const returnTo = _safeString(
       (statePayload && statePayload.return_to) || META_OAUTH_ERROR_REDIRECT || META_OAUTH_SUCCESS_REDIRECT || "",
       500
     );
-    if (returnTo) return res.redirect(_appendQueryParams(returnTo, { facebook: "error", message }));
-    return res.status(400).json({ ok: false, error: message });
+    const extras = extraParams && typeof extraParams === "object" ? extraParams : {};
+    if (returnTo) return res.redirect(_appendQueryParams(returnTo, Object.assign({ facebook: "error", message }, extras)));
+    return res.status(400).json(Object.assign({ ok: false, error: message }, extras));
   };
 
   try {
@@ -811,9 +817,13 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
         available_pages: availablePages
       });
       const availableNames = availablePages.map((item) => item.name).filter(Boolean);
+      const debugParams = _facebookDebugEnabled() && availableNames.length
+        ? { available_pages: availableNames.join(" | ") }
+        : {};
       return fail(
         `unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"${availableNames.length ? ` (available: ${availableNames.join(", ")})` : ""}`,
-        statePayload
+        statePayload,
+        debugParams
       );
     }
 
