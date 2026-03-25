@@ -17,11 +17,13 @@ const FACEBOOK_PUBLISH_HISTORY_FILE = path.join(ANALYTICS_DIR, "facebook-publish
 const FACEBOOK_PAGE_NAME_TARGET = String(process.env.FACEBOOK_PAGE_NAME_TARGET || "Voodoo Media").trim();
 const META_APP_ID = String(process.env.META_APP_ID || "").trim();
 const META_APP_SECRET = String(process.env.META_APP_SECRET || "").trim();
-const META_REDIRECT_URI = String(process.env.META_REDIRECT_URI || "").trim();
+const META_REDIRECT_URI = String(
+  process.env.META_REDIRECT_URI || "https://wrestling-archive.onrender.com/admin/facebook/connect/callback"
+).trim();
 const META_GRAPH_VERSION = String(process.env.META_GRAPH_VERSION || "v22.0").trim();
 const META_OAUTH_STATE_SECRET = String(process.env.META_OAUTH_STATE_SECRET || "vm-meta-oauth-dev-secret").trim();
-const META_OAUTH_SUCCESS_REDIRECT = String(process.env.META_OAUTH_SUCCESS_REDIRECT || "").trim();
-const META_OAUTH_ERROR_REDIRECT = String(process.env.META_OAUTH_ERROR_REDIRECT || "").trim();
+const META_OAUTH_SUCCESS_REDIRECT = String(process.env.META_OAUTH_SUCCESS_REDIRECT || "https://vmpix.onrender.com/admin").trim();
+const META_OAUTH_ERROR_REDIRECT = String(process.env.META_OAUTH_ERROR_REDIRECT || "https://vmpix.onrender.com/admin").trim();
 
 function _facebookRequestedScopes() {
   return [
