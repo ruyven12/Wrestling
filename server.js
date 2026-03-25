@@ -17,6 +17,7 @@ const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, "analytics-events.ndjson"
 const FACEBOOK_CONNECTION_FILE = path.join(ANALYTICS_DIR, "facebook-page-connection.json");
 const FACEBOOK_PUBLISH_HISTORY_FILE = path.join(ANALYTICS_DIR, "facebook-publish-history.ndjson");
 const FACEBOOK_PAGE_NAME_TARGET = String(process.env.FACEBOOK_PAGE_NAME_TARGET || "Voodoo Media").trim();
+const FACEBOOK_PAGE_ID_TARGET = String(process.env.FACEBOOK_PAGE_ID_TARGET || "766767130020404").trim();
 const META_APP_ID = String(process.env.META_APP_ID || "").trim();
 const META_APP_SECRET = String(process.env.META_APP_SECRET || "").trim();
 const META_REDIRECT_URI = String(
@@ -173,6 +174,7 @@ function _writeFacebookConnectionState(nextState) {
 function _facebookConfigSummary() {
   return {
     page_target: FACEBOOK_PAGE_NAME_TARGET,
+    page_id_target: FACEBOOK_PAGE_ID_TARGET || null,
     app_id_configured: !!META_APP_ID,
     app_secret_configured: !!META_APP_SECRET,
     redirect_uri_configured: !!META_REDIRECT_URI,
@@ -268,6 +270,16 @@ async function _fetchFacebookManagedPages(userAccessToken) {
   return Array.isArray(data && data.data) ? data.data : [];
 }
 
+async function _fetchFacebookPageById(userAccessToken, pageId) {
+  const id = _safeString(pageId, 120);
+  if (!id) return null;
+  const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(id)}`);
+  url.searchParams.set("fields", "id,name,access_token,tasks");
+  url.searchParams.set("access_token", String(userAccessToken || "").trim());
+  const data = await _facebookJson(url.toString());
+  return data && typeof data === "object" ? data : null;
+}
+
 async function _fetchFacebookGrantedScopes(userAccessToken) {
   const url = new URL(`${_facebookGraphBase()}/me/permissions`);
   url.searchParams.set("access_token", String(userAccessToken || "").trim());
@@ -342,7 +354,12 @@ async function _fetchFacebookLiveDebug(userAccessToken) {
 function _findTargetFacebookPage(pages) {
   const items = Array.isArray(pages) ? pages : [];
   const target = String(FACEBOOK_PAGE_NAME_TARGET || "").trim().toLowerCase();
+  const targetId = String(FACEBOOK_PAGE_ID_TARGET || "").trim();
   if (!items.length) return null;
+  if (targetId) {
+    const byId = items.find((page) => _safeString(page && page.id, 120) === targetId);
+    if (byId) return byId;
+  }
   if (!target) return items[0] || null;
   let exact = null;
   let contains = null;
@@ -942,7 +959,7 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
       }
     }
 
-    const pages = await _fetchFacebookManagedPages(userAccessToken);
+    let pages = await _fetchFacebookManagedPages(userAccessToken);
     let grantedScopeInfo = { granted: [], declined: [] };
     let debugUser = null;
     try {
@@ -955,7 +972,20 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
     } catch (userErr) {
       console.warn("facebook user profile lookup failed:", userErr && userErr.message ? userErr.message : userErr);
     }
-    const page = _findTargetFacebookPage(pages);
+    let page = _findTargetFacebookPage(pages);
+    if ((!page || !page.id || !page.access_token) && FACEBOOK_PAGE_ID_TARGET) {
+      try {
+        const directPage = await _fetchFacebookPageById(userAccessToken, FACEBOOK_PAGE_ID_TARGET);
+        if (directPage && directPage.id) {
+          const existingIndex = pages.findIndex((item) => _safeString(item && item.id, 120) === _safeString(directPage.id, 120));
+          if (existingIndex >= 0) pages[existingIndex] = Object.assign({}, pages[existingIndex], directPage);
+          else pages = pages.concat([directPage]);
+          page = _findTargetFacebookPage(pages);
+        }
+      } catch (directErr) {
+        console.warn("facebook direct page lookup failed:", directErr && directErr.message ? directErr.message : directErr);
+      }
+    }
     if (!page || !page.id || !page.access_token) {
       const availablePages = _facebookPageSummaries(pages);
       try {
