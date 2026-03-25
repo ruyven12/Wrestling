@@ -228,15 +228,35 @@ async function _fetchFacebookManagedPages(userAccessToken) {
 function _findTargetFacebookPage(pages) {
   const items = Array.isArray(pages) ? pages : [];
   const target = String(FACEBOOK_PAGE_NAME_TARGET || "").trim().toLowerCase();
+  if (!items.length) return null;
   if (!target) return items[0] || null;
   let exact = null;
   let contains = null;
+  let normalizedExact = null;
+  let normalizedContains = null;
+  const norm = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const targetNorm = norm(target);
   items.forEach((page) => {
     const name = String(page && page.name || "").trim().toLowerCase();
     if (!exact && name === target) exact = page;
     if (!contains && name && name.indexOf(target) >= 0) contains = page;
+    const normalized = norm(name);
+    if (!normalizedExact && normalized && targetNorm && normalized === targetNorm) normalizedExact = page;
+    if (!normalizedContains && normalized && targetNorm && normalized.indexOf(targetNorm) >= 0) normalizedContains = page;
   });
-  return exact || contains || items[0] || null;
+  if (exact || contains || normalizedExact || normalizedContains) {
+    return exact || contains || normalizedExact || normalizedContains || null;
+  }
+  if (items.length === 1) return items[0];
+  return null;
+}
+
+function _facebookPageSummaries(pages) {
+  return (Array.isArray(pages) ? pages : []).map((page) => ({
+    id: _safeString(page && page.id, 120),
+    name: _safeString(page && page.name, 160),
+    tasks: Array.isArray(page && page.tasks) ? page.tasks.map((task) => _safeString(task, 80)).filter(Boolean) : []
+  }));
 }
 
 function _buildFacebookOauthAuthorizeUrl(returnTo) {
@@ -766,7 +786,16 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
     const pages = await _fetchFacebookManagedPages(userAccessToken);
     const page = _findTargetFacebookPage(pages);
     if (!page || !page.id || !page.access_token) {
-      return fail(`unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"`, statePayload);
+      const availablePages = _facebookPageSummaries(pages);
+      console.warn("facebook connect callback: target page not found", {
+        target: FACEBOOK_PAGE_NAME_TARGET,
+        available_pages: availablePages
+      });
+      const availableNames = availablePages.map((item) => item.name).filter(Boolean);
+      return fail(
+        `unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"${availableNames.length ? ` (available: ${availableNames.join(", ")})` : ""}`,
+        statePayload
+      );
     }
 
     _writeFacebookConnectionState({
