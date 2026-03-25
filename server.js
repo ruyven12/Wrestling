@@ -12,6 +12,90 @@ const app = express();
 
 const ANALYTICS_DIR = path.join(__dirname, "data");
 const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, "analytics-events.ndjson");
+const FACEBOOK_CONNECTION_FILE = path.join(ANALYTICS_DIR, "facebook-page-connection.json");
+const FACEBOOK_PAGE_NAME_TARGET = String(process.env.FACEBOOK_PAGE_NAME_TARGET || "Voodoo Media").trim();
+const META_APP_ID = String(process.env.META_APP_ID || "").trim();
+const META_APP_SECRET = String(process.env.META_APP_SECRET || "").trim();
+const META_REDIRECT_URI = String(process.env.META_REDIRECT_URI || "").trim();
+const META_GRAPH_VERSION = String(process.env.META_GRAPH_VERSION || "v22.0").trim();
+
+function _defaultFacebookConnectionState() {
+  return {
+    connected: false,
+    page: {
+      id: "",
+      name: ""
+    },
+    token_status: "not_connected",
+    last_checked_at: null,
+    last_publish_at: null,
+    scopes: [],
+    updated_at: null
+  };
+}
+
+function _readFacebookConnectionState() {
+  try {
+    if (!fs.existsSync(FACEBOOK_CONNECTION_FILE)) return _defaultFacebookConnectionState();
+    const raw = fs.readFileSync(FACEBOOK_CONNECTION_FILE, "utf8");
+    if (!raw.trim()) return _defaultFacebookConnectionState();
+    const parsed = JSON.parse(raw);
+    const base = _defaultFacebookConnectionState();
+    const page = parsed && parsed.page && typeof parsed.page === "object" ? parsed.page : {};
+    const scopes = Array.isArray(parsed && parsed.scopes) ? parsed.scopes : [];
+    return {
+      connected: !!parsed.connected,
+      page: {
+        id: _safeString(page.id, 120),
+        name: _safeString(page.name, 160)
+      },
+      token_status: _safeString(parsed.token_status, 48) || base.token_status,
+      last_checked_at: _safeString(parsed.last_checked_at, 80) || null,
+      last_publish_at: _safeString(parsed.last_publish_at, 80) || null,
+      scopes: scopes.map((scope) => _safeString(scope, 80)).filter(Boolean),
+      updated_at: _safeString(parsed.updated_at, 80) || null
+    };
+  } catch (err) {
+    console.error("facebook connection state read failed:", err);
+    return _defaultFacebookConnectionState();
+  }
+}
+
+function _writeFacebookConnectionState(nextState) {
+  const base = _defaultFacebookConnectionState();
+  const next = nextState && typeof nextState === "object" ? nextState : {};
+  const payload = {
+    connected: !!next.connected,
+    page: {
+      id: _safeString(next.page && next.page.id, 120),
+      name: _safeString(next.page && next.page.name, 160)
+    },
+    token_status: _safeString(next.token_status, 48) || base.token_status,
+    last_checked_at: _safeString(next.last_checked_at, 80) || null,
+    last_publish_at: _safeString(next.last_publish_at, 80) || null,
+    scopes: Array.isArray(next.scopes) ? next.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+    updated_at: new Date().toISOString()
+  };
+  try {
+    _ensureAnalyticsDir();
+    fs.writeFileSync(FACEBOOK_CONNECTION_FILE, JSON.stringify(payload, null, 2), "utf8");
+  } catch (err) {
+    console.error("facebook connection state write failed:", err);
+    throw err;
+  }
+  return payload;
+}
+
+function _facebookConfigSummary() {
+  return {
+    page_target: FACEBOOK_PAGE_NAME_TARGET,
+    app_id_configured: !!META_APP_ID,
+    app_secret_configured: !!META_APP_SECRET,
+    redirect_uri_configured: !!META_REDIRECT_URI,
+    graph_version: META_GRAPH_VERSION || null,
+    connect_ready: !!(META_APP_ID && META_APP_SECRET && META_REDIRECT_URI)
+  };
+}
 
 // =========================================================
 // UNIVERSAL CORS
@@ -310,6 +394,21 @@ app.get("/admin/verify", (req, res) => {
     ok: true,
     expiresAt: payload.exp ? new Date(payload.exp).toISOString() : null
   });
+});
+
+app.get("/admin/facebook/status", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    return res.json({
+      ok: true,
+      config: _facebookConfigSummary(),
+      connection: _readFacebookConnectionState()
+    });
+  } catch (err) {
+    console.error("/admin/facebook/status failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook status failed" });
+  }
 });
 
 app.post("/admin/people-index/rebuild", async (req, res) => {
