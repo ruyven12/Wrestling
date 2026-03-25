@@ -48,6 +48,8 @@ function _defaultFacebookConnectionRecord() {
     token_status: "not_connected",
     last_checked_at: null,
     last_publish_at: null,
+    last_available_pages: [],
+    last_error: "",
     scopes: [],
     updated_at: null
   };
@@ -62,13 +64,19 @@ function _toPublicFacebookConnectionState(record) {
       id: _safeString(page.id, 120),
       name: _safeString(page.name, 160)
     },
-    token_status: _safeString(src.token_status, 48) || "not_connected",
-    last_checked_at: _safeString(src.last_checked_at, 80) || null,
-    last_publish_at: _safeString(src.last_publish_at, 80) || null,
-    user_token_expires_at: _safeString(src.user_token_expires_at, 80) || null,
-    scopes: Array.isArray(src.scopes) ? src.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
-    updated_at: _safeString(src.updated_at, 80) || null
-  };
+      token_status: _safeString(src.token_status, 48) || "not_connected",
+      last_checked_at: _safeString(src.last_checked_at, 80) || null,
+      last_publish_at: _safeString(src.last_publish_at, 80) || null,
+      user_token_expires_at: _safeString(src.user_token_expires_at, 80) || null,
+      last_available_pages: Array.isArray(src.last_available_pages) ? src.last_available_pages.map((item) => ({
+        id: _safeString(item && item.id, 120),
+        name: _safeString(item && item.name, 160),
+        tasks: Array.isArray(item && item.tasks) ? item.tasks.map((task) => _safeString(task, 80)).filter(Boolean) : []
+      })) : [],
+      last_error: _safeString(src.last_error, 500) || "",
+      scopes: Array.isArray(src.scopes) ? src.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      updated_at: _safeString(src.updated_at, 80) || null
+    };
 }
 
 function _readFacebookConnectionRecord() {
@@ -92,6 +100,12 @@ function _readFacebookConnectionRecord() {
       token_status: _safeString(parsed.token_status, 48) || base.token_status,
       last_checked_at: _safeString(parsed.last_checked_at, 80) || null,
       last_publish_at: _safeString(parsed.last_publish_at, 80) || null,
+      last_available_pages: Array.isArray(parsed.last_available_pages) ? parsed.last_available_pages.map((item) => ({
+        id: _safeString(item && item.id, 120),
+        name: _safeString(item && item.name, 160),
+        tasks: Array.isArray(item && item.tasks) ? item.tasks.map((task) => _safeString(task, 80)).filter(Boolean) : []
+      })) : [],
+      last_error: _safeString(parsed.last_error, 500) || "",
       scopes: scopes.map((scope) => _safeString(scope, 80)).filter(Boolean),
       updated_at: _safeString(parsed.updated_at, 80) || null
     };
@@ -116,6 +130,12 @@ function _writeFacebookConnectionState(nextState) {
     token_status: _safeString(next.token_status, 48) || base.token_status,
     last_checked_at: _safeString(next.last_checked_at, 80) || null,
     last_publish_at: _safeString(next.last_publish_at, 80) || null,
+    last_available_pages: Array.isArray(next.last_available_pages) ? next.last_available_pages.map((item) => ({
+      id: _safeString(item && item.id, 120),
+      name: _safeString(item && item.name, 160),
+      tasks: Array.isArray(item && item.tasks) ? item.tasks.map((task) => _safeString(task, 80)).filter(Boolean) : []
+    })) : [],
+    last_error: _safeString(next.last_error, 500) || "",
     scopes: Array.isArray(next.scopes) ? next.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
     updated_at: new Date().toISOString()
   };
@@ -456,6 +476,7 @@ app.get("/ping", (req, res) => {
 
 app.get("/__vm/diagnostics", (req, res) => {
   allowCors(res, req);
+  const connection = _toPublicFacebookConnectionState(_readFacebookConnectionRecord());
   return res.json({
     ok: true,
     build: SERVER_BUILD_TAG,
@@ -467,7 +488,9 @@ app.get("/__vm/diagnostics", (req, res) => {
       oauth_success_redirect_configured: !!META_OAUTH_SUCCESS_REDIRECT,
       oauth_error_redirect_configured: !!META_OAUTH_ERROR_REDIRECT,
       debug_mode: _facebookDebugEnabled(),
-      graph_version: META_GRAPH_VERSION || null
+      graph_version: META_GRAPH_VERSION || null,
+      last_error: connection.last_error || "",
+      last_available_pages: Array.isArray(connection.last_available_pages) ? connection.last_available_pages : []
     }
   });
 });
@@ -812,6 +835,20 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
     const page = _findTargetFacebookPage(pages);
     if (!page || !page.id || !page.access_token) {
       const availablePages = _facebookPageSummaries(pages);
+      try {
+        const previous = _readFacebookConnectionRecord();
+        _writeFacebookConnectionState(Object.assign({}, previous, {
+          connected: false,
+          page: { id: "", name: "" },
+          page_access_token: "",
+          user_access_token: userAccessToken,
+          user_token_expires_at: expiresAt,
+          token_status: "not_connected",
+          last_checked_at: new Date().toISOString(),
+          last_available_pages: availablePages,
+          last_error: `unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"`
+        }));
+      } catch (_) {}
       console.warn("facebook connect callback: target page not found", {
         target: FACEBOOK_PAGE_NAME_TARGET,
         available_pages: availablePages
@@ -839,6 +876,8 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
       token_status: "valid",
       last_checked_at: new Date().toISOString(),
       last_publish_at: null,
+      last_available_pages: _facebookPageSummaries(pages),
+      last_error: "",
       scopes: Array.isArray(statePayload.scopes) ? statePayload.scopes : _facebookRequestedScopes()
     });
 
