@@ -18,14 +18,28 @@ const META_APP_ID = String(process.env.META_APP_ID || "").trim();
 const META_APP_SECRET = String(process.env.META_APP_SECRET || "").trim();
 const META_REDIRECT_URI = String(process.env.META_REDIRECT_URI || "").trim();
 const META_GRAPH_VERSION = String(process.env.META_GRAPH_VERSION || "v22.0").trim();
+const META_OAUTH_STATE_SECRET = String(process.env.META_OAUTH_STATE_SECRET || "vm-meta-oauth-dev-secret").trim();
+const META_OAUTH_SUCCESS_REDIRECT = String(process.env.META_OAUTH_SUCCESS_REDIRECT || "").trim();
+const META_OAUTH_ERROR_REDIRECT = String(process.env.META_OAUTH_ERROR_REDIRECT || "").trim();
 
-function _defaultFacebookConnectionState() {
+function _facebookRequestedScopes() {
+  return [
+    "pages_show_list",
+    "pages_manage_posts",
+    "pages_read_engagement"
+  ];
+}
+
+function _defaultFacebookConnectionRecord() {
   return {
     connected: false,
     page: {
       id: "",
       name: ""
     },
+    page_access_token: "",
+    user_access_token: "",
+    user_token_expires_at: null,
     token_status: "not_connected",
     last_checked_at: null,
     last_publish_at: null,
@@ -34,13 +48,31 @@ function _defaultFacebookConnectionState() {
   };
 }
 
-function _readFacebookConnectionState() {
+function _toPublicFacebookConnectionState(record) {
+  const src = record && typeof record === "object" ? record : _defaultFacebookConnectionRecord();
+  const page = src.page && typeof src.page === "object" ? src.page : {};
+  return {
+    connected: !!src.connected,
+    page: {
+      id: _safeString(page.id, 120),
+      name: _safeString(page.name, 160)
+    },
+    token_status: _safeString(src.token_status, 48) || "not_connected",
+    last_checked_at: _safeString(src.last_checked_at, 80) || null,
+    last_publish_at: _safeString(src.last_publish_at, 80) || null,
+    user_token_expires_at: _safeString(src.user_token_expires_at, 80) || null,
+    scopes: Array.isArray(src.scopes) ? src.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+    updated_at: _safeString(src.updated_at, 80) || null
+  };
+}
+
+function _readFacebookConnectionRecord() {
   try {
-    if (!fs.existsSync(FACEBOOK_CONNECTION_FILE)) return _defaultFacebookConnectionState();
+    if (!fs.existsSync(FACEBOOK_CONNECTION_FILE)) return _defaultFacebookConnectionRecord();
     const raw = fs.readFileSync(FACEBOOK_CONNECTION_FILE, "utf8");
-    if (!raw.trim()) return _defaultFacebookConnectionState();
+    if (!raw.trim()) return _defaultFacebookConnectionRecord();
     const parsed = JSON.parse(raw);
-    const base = _defaultFacebookConnectionState();
+    const base = _defaultFacebookConnectionRecord();
     const page = parsed && parsed.page && typeof parsed.page === "object" ? parsed.page : {};
     const scopes = Array.isArray(parsed && parsed.scopes) ? parsed.scopes : [];
     return {
@@ -49,6 +81,9 @@ function _readFacebookConnectionState() {
         id: _safeString(page.id, 120),
         name: _safeString(page.name, 160)
       },
+      page_access_token: _safeString(parsed.page_access_token, 2000),
+      user_access_token: _safeString(parsed.user_access_token, 2000),
+      user_token_expires_at: _safeString(parsed.user_token_expires_at, 80) || null,
       token_status: _safeString(parsed.token_status, 48) || base.token_status,
       last_checked_at: _safeString(parsed.last_checked_at, 80) || null,
       last_publish_at: _safeString(parsed.last_publish_at, 80) || null,
@@ -57,12 +92,12 @@ function _readFacebookConnectionState() {
     };
   } catch (err) {
     console.error("facebook connection state read failed:", err);
-    return _defaultFacebookConnectionState();
+    return _defaultFacebookConnectionRecord();
   }
 }
 
 function _writeFacebookConnectionState(nextState) {
-  const base = _defaultFacebookConnectionState();
+  const base = _defaultFacebookConnectionRecord();
   const next = nextState && typeof nextState === "object" ? nextState : {};
   const payload = {
     connected: !!next.connected,
@@ -70,6 +105,9 @@ function _writeFacebookConnectionState(nextState) {
       id: _safeString(next.page && next.page.id, 120),
       name: _safeString(next.page && next.page.name, 160)
     },
+    page_access_token: _safeString(next.page_access_token, 2000),
+    user_access_token: _safeString(next.user_access_token, 2000),
+    user_token_expires_at: _safeString(next.user_token_expires_at, 80) || null,
     token_status: _safeString(next.token_status, 48) || base.token_status,
     last_checked_at: _safeString(next.last_checked_at, 80) || null,
     last_publish_at: _safeString(next.last_publish_at, 80) || null,
@@ -92,9 +130,142 @@ function _facebookConfigSummary() {
     app_id_configured: !!META_APP_ID,
     app_secret_configured: !!META_APP_SECRET,
     redirect_uri_configured: !!META_REDIRECT_URI,
+    oauth_success_redirect_configured: !!META_OAUTH_SUCCESS_REDIRECT,
+    oauth_error_redirect_configured: !!META_OAUTH_ERROR_REDIRECT,
     graph_version: META_GRAPH_VERSION || null,
     connect_ready: !!(META_APP_ID && META_APP_SECRET && META_REDIRECT_URI)
   };
+}
+
+function _base64UrlEncode(input) {
+  return Buffer.from(String(input || ""), "utf8").toString("base64url");
+}
+
+function _base64UrlDecode(input) {
+  return Buffer.from(String(input || ""), "base64url").toString("utf8");
+}
+
+function _createFacebookOauthState(payload) {
+  const encoded = _base64UrlEncode(JSON.stringify(payload || {}));
+  const sig = crypto.createHmac("sha256", META_OAUTH_STATE_SECRET).update(encoded).digest("base64url");
+  return `${encoded}.${sig}`;
+}
+
+function _verifyFacebookOauthState(rawState) {
+  const raw = String(rawState || "").trim();
+  if (!raw || raw.indexOf(".") === -1) return null;
+  const parts = raw.split(".");
+  const encoded = parts[0] || "";
+  const sig = parts[1] || "";
+  if (!encoded || !sig) return null;
+  const expected = crypto.createHmac("sha256", META_OAUTH_STATE_SECRET).update(encoded).digest("base64url");
+  if (!_adminSafeEqual(sig, expected)) return null;
+  try {
+    const payload = JSON.parse(_base64UrlDecode(encoded));
+    const issuedAt = Number(payload && payload.iat || 0);
+    if (!issuedAt || (Date.now() - issuedAt) > (15 * 60 * 1000)) return null;
+    return payload && typeof payload === "object" ? payload : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _facebookGraphBase() {
+  return `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+}
+
+function _facebookDialogBase() {
+  return "https://www.facebook.com/dialog/oauth";
+}
+
+async function _facebookJson(url) {
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  const body = await r.text();
+  let data = null;
+  try {
+    data = body ? JSON.parse(body) : {};
+  } catch (_) {
+    data = body;
+  }
+  if (!r.ok) {
+    const msg = typeof data === "object" && data && data.error && data.error.message
+      ? data.error.message
+      : (typeof data === "string" ? data : `HTTP ${r.status}`);
+    throw new Error(`facebook request failed: ${msg}`);
+  }
+  return data;
+}
+
+async function _exchangeFacebookCodeForUserToken(code) {
+  const url = new URL(`${_facebookGraphBase()}/oauth/access_token`);
+  url.searchParams.set("client_id", META_APP_ID);
+  url.searchParams.set("client_secret", META_APP_SECRET);
+  url.searchParams.set("redirect_uri", META_REDIRECT_URI);
+  url.searchParams.set("code", String(code || "").trim());
+  return _facebookJson(url.toString());
+}
+
+async function _exchangeForLongLivedUserToken(shortLivedToken) {
+  const url = new URL(`${_facebookGraphBase()}/oauth/access_token`);
+  url.searchParams.set("grant_type", "fb_exchange_token");
+  url.searchParams.set("client_id", META_APP_ID);
+  url.searchParams.set("client_secret", META_APP_SECRET);
+  url.searchParams.set("fb_exchange_token", String(shortLivedToken || "").trim());
+  return _facebookJson(url.toString());
+}
+
+async function _fetchFacebookManagedPages(userAccessToken) {
+  const url = new URL(`${_facebookGraphBase()}/me/accounts`);
+  url.searchParams.set("fields", "id,name,access_token,tasks");
+  url.searchParams.set("access_token", String(userAccessToken || "").trim());
+  const data = await _facebookJson(url.toString());
+  return Array.isArray(data && data.data) ? data.data : [];
+}
+
+function _findTargetFacebookPage(pages) {
+  const items = Array.isArray(pages) ? pages : [];
+  const target = String(FACEBOOK_PAGE_NAME_TARGET || "").trim().toLowerCase();
+  if (!target) return items[0] || null;
+  let exact = null;
+  let contains = null;
+  items.forEach((page) => {
+    const name = String(page && page.name || "").trim().toLowerCase();
+    if (!exact && name === target) exact = page;
+    if (!contains && name && name.indexOf(target) >= 0) contains = page;
+  });
+  return exact || contains || items[0] || null;
+}
+
+function _buildFacebookOauthAuthorizeUrl(returnTo) {
+  const state = _createFacebookOauthState({
+    iat: Date.now(),
+    return_to: _safeString(returnTo, 500) || META_OAUTH_SUCCESS_REDIRECT || "",
+    page_target: FACEBOOK_PAGE_NAME_TARGET,
+    scopes: _facebookRequestedScopes()
+  });
+  const url = new URL(_facebookDialogBase());
+  url.searchParams.set("client_id", META_APP_ID);
+  url.searchParams.set("redirect_uri", META_REDIRECT_URI);
+  url.searchParams.set("state", state);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", _facebookRequestedScopes().join(","));
+  return { url: url.toString(), state };
+}
+
+function _appendQueryParams(baseUrl, params) {
+  const raw = String(baseUrl || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw);
+    Object.keys(params || {}).forEach((key) => {
+      const value = params[key];
+      if (value == null || value === "") return;
+      u.searchParams.set(key, String(value));
+    });
+    return u.toString();
+  } catch (_) {
+    return raw;
+  }
 }
 
 // =========================================================
@@ -403,11 +574,141 @@ app.get("/admin/facebook/status", (req, res) => {
     return res.json({
       ok: true,
       config: _facebookConfigSummary(),
-      connection: _readFacebookConnectionState()
+      connection: _toPublicFacebookConnectionState(_readFacebookConnectionRecord())
     });
   } catch (err) {
     console.error("/admin/facebook/status failed:", err);
     return res.status(500).json({ ok: false, error: "facebook status failed" });
+  }
+});
+
+app.post("/admin/facebook/connect/start", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    if (!META_APP_ID || !META_APP_SECRET || !META_REDIRECT_URI) {
+      return res.status(400).json({
+        ok: false,
+        error: "facebook config incomplete",
+        config: _facebookConfigSummary()
+      });
+    }
+    const returnTo = _safeString(req.body && req.body.return_to, 500) || META_OAUTH_SUCCESS_REDIRECT || "";
+    const auth = _buildFacebookOauthAuthorizeUrl(returnTo);
+    return res.json({
+      ok: true,
+      authorize_url: auth.url,
+      page_target: FACEBOOK_PAGE_NAME_TARGET,
+      scopes: _facebookRequestedScopes()
+    });
+  } catch (err) {
+    console.error("/admin/facebook/connect/start failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook connect start failed" });
+  }
+});
+
+app.get("/admin/facebook/connect/callback", async (req, res) => {
+  allowCors(res, req);
+  const fail = (errorMessage, payload) => {
+    const message = _safeString(errorMessage, 240) || "facebook connect failed";
+    const statePayload = payload && typeof payload === "object" ? payload : null;
+    const returnTo = _safeString(
+      (statePayload && statePayload.return_to) || META_OAUTH_ERROR_REDIRECT || META_OAUTH_SUCCESS_REDIRECT || "",
+      500
+    );
+    if (returnTo) return res.redirect(_appendQueryParams(returnTo, { facebook: "error", message }));
+    return res.status(400).json({ ok: false, error: message });
+  };
+
+  try {
+    const statePayload = _verifyFacebookOauthState(req.query && req.query.state);
+    if (!statePayload) return fail("invalid facebook oauth state");
+    if (req.query && req.query.error) {
+      const msg = _safeString((req.query.error_description || req.query.error_message || req.query.error), 240) || "facebook authorization denied";
+      return fail(msg, statePayload);
+    }
+
+    const code = _safeString(req.query && req.query.code, 1200);
+    if (!code) return fail("missing facebook authorization code", statePayload);
+
+    const shortToken = await _exchangeFacebookCodeForUserToken(code);
+    let userAccessToken = _safeString(shortToken && shortToken.access_token, 2000);
+    let expiresAt = null;
+    if (!userAccessToken) return fail("facebook user token missing", statePayload);
+
+    try {
+      const longToken = await _exchangeForLongLivedUserToken(userAccessToken);
+      if (longToken && longToken.access_token) {
+        userAccessToken = _safeString(longToken.access_token, 2000) || userAccessToken;
+        if (Number.isFinite(Number(longToken.expires_in))) {
+          expiresAt = new Date(Date.now() + (Number(longToken.expires_in) * 1000)).toISOString();
+        }
+      } else if (Number.isFinite(Number(shortToken && shortToken.expires_in))) {
+        expiresAt = new Date(Date.now() + (Number(shortToken.expires_in) * 1000)).toISOString();
+      }
+    } catch (tokenErr) {
+      console.warn("facebook long-lived token exchange skipped:", tokenErr && tokenErr.message ? tokenErr.message : tokenErr);
+      if (Number.isFinite(Number(shortToken && shortToken.expires_in))) {
+        expiresAt = new Date(Date.now() + (Number(shortToken.expires_in) * 1000)).toISOString();
+      }
+    }
+
+    const pages = await _fetchFacebookManagedPages(userAccessToken);
+    const page = _findTargetFacebookPage(pages);
+    if (!page || !page.id || !page.access_token) {
+      return fail(`unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"`, statePayload);
+    }
+
+    _writeFacebookConnectionState({
+      connected: true,
+      page: {
+        id: _safeString(page.id, 120),
+        name: _safeString(page.name, 160)
+      },
+      page_access_token: _safeString(page.access_token, 2000),
+      user_access_token: userAccessToken,
+      user_token_expires_at: expiresAt,
+      token_status: "valid",
+      last_checked_at: new Date().toISOString(),
+      last_publish_at: null,
+      scopes: Array.isArray(statePayload.scopes) ? statePayload.scopes : _facebookRequestedScopes()
+    });
+
+    const returnTo = _safeString(statePayload.return_to, 500) || META_OAUTH_SUCCESS_REDIRECT || "";
+    if (returnTo) {
+      return res.redirect(_appendQueryParams(returnTo, {
+        facebook: "connected",
+        page_id: _safeString(page.id, 120),
+        page_name: _safeString(page.name, 160)
+      }));
+    }
+
+    return res.json({
+      ok: true,
+      connected: true,
+      page: {
+        id: _safeString(page.id, 120),
+        name: _safeString(page.name, 160)
+      }
+    });
+  } catch (err) {
+    console.error("/admin/facebook/connect/callback failed:", err);
+    return fail(err && err.message ? err.message : "facebook callback failed");
+  }
+});
+
+app.post("/admin/facebook/disconnect", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const cleared = _writeFacebookConnectionState(_defaultFacebookConnectionRecord());
+    return res.json({
+      ok: true,
+      connection: _toPublicFacebookConnectionState(cleared)
+    });
+  } catch (err) {
+    console.error("/admin/facebook/disconnect failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook disconnect failed" });
   }
 });
 
