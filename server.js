@@ -32,7 +32,8 @@ function _facebookRequestedScopes() {
   return [
     "pages_show_list",
     "pages_manage_posts",
-    "pages_read_engagement"
+    "pages_read_engagement",
+    "business_management"
   ];
 }
 
@@ -2904,6 +2905,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
