@@ -13,6 +13,7 @@ const app = express();
 const ANALYTICS_DIR = path.join(__dirname, "data");
 const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, "analytics-events.ndjson");
 const FACEBOOK_CONNECTION_FILE = path.join(ANALYTICS_DIR, "facebook-page-connection.json");
+const FACEBOOK_PUBLISH_HISTORY_FILE = path.join(ANALYTICS_DIR, "facebook-publish-history.ndjson");
 const FACEBOOK_PAGE_NAME_TARGET = String(process.env.FACEBOOK_PAGE_NAME_TARGET || "Voodoo Media").trim();
 const META_APP_ID = String(process.env.META_APP_ID || "").trim();
 const META_APP_SECRET = String(process.env.META_APP_SECRET || "").trim();
@@ -266,6 +267,113 @@ function _appendQueryParams(baseUrl, params) {
   } catch (_) {
     return raw;
   }
+}
+
+function _isHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch (_) {
+    return false;
+  }
+}
+
+function _normalizeFacebookDraft(input) {
+  const body = input && typeof input === "object" ? input : {};
+  const section = _safeString(body.section, 32).toLowerCase();
+  const entityType = _safeString(body.entity_type, 32).toLowerCase() || "show";
+  const entityId = _safeString(body.entity_id, 160);
+  const entityLabel = _safeString(body.entity_label, 240);
+  const caption = _safeString(body.caption, 5000);
+  const linkUrl = _safeString(body.link_url, 2000);
+  const imageUrl = _safeString(body.image_url, 2000);
+  const meta = _safeMeta(body.meta);
+  const errors = [];
+
+  if (!section) errors.push("section is required");
+  if (!entityType) errors.push("entity_type is required");
+  if (!entityId) errors.push("entity_id is required");
+  if (!entityLabel) errors.push("entity_label is required");
+  if (!caption) errors.push("caption is required");
+  if (!imageUrl || !_isHttpUrl(imageUrl)) errors.push("image_url must be a valid http(s) URL");
+  if (!linkUrl || !_isHttpUrl(linkUrl)) errors.push("link_url must be a valid http(s) URL");
+
+  const finalMessage = [caption, linkUrl].filter(Boolean).join("\n\n").trim();
+  if (!finalMessage) errors.push("final publish message is empty");
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    draft: {
+      section,
+      entity_type: entityType,
+      entity_id: entityId,
+      entity_label: entityLabel,
+      caption,
+      link_url: linkUrl,
+      image_url: imageUrl,
+      final_message: finalMessage,
+      meta
+    }
+  };
+}
+
+function _appendFacebookPublishHistory(item) {
+  if (!item || typeof item !== "object") return;
+  _ensureAnalyticsDir();
+  fs.appendFileSync(FACEBOOK_PUBLISH_HISTORY_FILE, JSON.stringify(item) + "\n", "utf8");
+}
+
+function _readFacebookPublishHistory(limit) {
+  try {
+    if (!fs.existsSync(FACEBOOK_PUBLISH_HISTORY_FILE)) return [];
+    const raw = fs.readFileSync(FACEBOOK_PUBLISH_HISTORY_FILE, "utf8");
+    if (!raw.trim()) return [];
+    const items = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try { return JSON.parse(line); } catch (_) { return null; }
+      })
+      .filter(Boolean);
+    const max = Math.max(1, Number(limit) || 20);
+    return items.slice(-max).reverse();
+  } catch (err) {
+    console.error("facebook publish history read failed:", err);
+    return [];
+  }
+}
+
+async function _facebookPostPhoto(connectionRecord, draft) {
+  const pageId = _safeString(connectionRecord && connectionRecord.page && connectionRecord.page.id, 120);
+  const pageAccessToken = _safeString(connectionRecord && connectionRecord.page_access_token, 2000);
+  if (!pageId || !pageAccessToken) throw new Error("facebook page is not connected");
+
+  const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(pageId)}/photos`);
+  const body = new URLSearchParams();
+  body.set("url", String(draft.image_url || "").trim());
+  body.set("caption", String(draft.final_message || "").trim());
+  body.set("access_token", pageAccessToken);
+
+  const r = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+  if (!r.ok) {
+    const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+    throw new Error(`facebook publish failed: ${msg}`);
+  }
+  return data;
 }
 
 // =========================================================
@@ -709,6 +817,141 @@ app.post("/admin/facebook/disconnect", (req, res) => {
   } catch (err) {
     console.error("/admin/facebook/disconnect failed:", err);
     return res.status(500).json({ ok: false, error: "facebook disconnect failed" });
+  }
+});
+
+app.post("/admin/facebook/preview", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const normalized = _normalizeFacebookDraft(req.body);
+    if (!normalized.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: normalized.errors[0] || "invalid facebook draft",
+        errors: normalized.errors
+      });
+    }
+    const record = _readFacebookConnectionRecord();
+    return res.json({
+      ok: true,
+      preview: {
+        page_name: _safeString(record && record.page && record.page.name, 160) || FACEBOOK_PAGE_NAME_TARGET,
+        page_id: _safeString(record && record.page && record.page.id, 120),
+        connected: !!record.connected,
+        token_status: _safeString(record.token_status, 48) || "not_connected",
+        section: normalized.draft.section,
+        entity_type: normalized.draft.entity_type,
+        entity_id: normalized.draft.entity_id,
+        entity_label: normalized.draft.entity_label,
+        caption: normalized.draft.caption,
+        link_url: normalized.draft.link_url,
+        image_url: normalized.draft.image_url,
+        final_message: normalized.draft.final_message,
+        meta: normalized.draft.meta
+      }
+    });
+  } catch (err) {
+    console.error("/admin/facebook/preview failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook preview failed" });
+  }
+});
+
+app.post("/admin/facebook/publish", async (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  const historyItem = {
+    id: "fbpub_" + crypto.randomBytes(8).toString("hex"),
+    created_at: new Date().toISOString(),
+    section: "",
+    entity_type: "",
+    entity_id: "",
+    entity_label: "",
+    status: "failed",
+    page_id: "",
+    page_name: "",
+    image_url: "",
+    link_url: "",
+    caption: "",
+    final_message: "",
+    facebook_post_id: "",
+    facebook_photo_id: "",
+    error: "",
+    meta: {}
+  };
+
+  try {
+    const normalized = _normalizeFacebookDraft(req.body);
+    if (!normalized.ok) {
+      historyItem.error = normalized.errors.join("; ");
+      _appendFacebookPublishHistory(historyItem);
+      return res.status(400).json({
+        ok: false,
+        error: normalized.errors[0] || "invalid facebook draft",
+        errors: normalized.errors
+      });
+    }
+
+    const draft = normalized.draft;
+    historyItem.section = draft.section;
+    historyItem.entity_type = draft.entity_type;
+    historyItem.entity_id = draft.entity_id;
+    historyItem.entity_label = draft.entity_label;
+    historyItem.image_url = draft.image_url;
+    historyItem.link_url = draft.link_url;
+    historyItem.caption = draft.caption;
+    historyItem.final_message = draft.final_message;
+    historyItem.meta = draft.meta;
+
+    const record = _readFacebookConnectionRecord();
+    if (!record.connected || !record.page_access_token || !(record.page && record.page.id)) {
+      historyItem.error = "facebook page is not connected";
+      _appendFacebookPublishHistory(historyItem);
+      return res.status(400).json({ ok: false, error: "facebook page is not connected" });
+    }
+
+    historyItem.page_id = _safeString(record.page.id, 120);
+    historyItem.page_name = _safeString(record.page.name, 160);
+
+    const publishResult = await _facebookPostPhoto(record, draft);
+    historyItem.status = "success";
+    historyItem.facebook_post_id = _safeString(publishResult && publishResult.post_id, 240);
+    historyItem.facebook_photo_id = _safeString(publishResult && publishResult.id, 240);
+    _appendFacebookPublishHistory(historyItem);
+
+    _writeFacebookConnectionState(Object.assign({}, record, {
+      token_status: "valid",
+      last_checked_at: new Date().toISOString(),
+      last_publish_at: historyItem.created_at
+    }));
+
+    return res.json({
+      ok: true,
+      publish_id: historyItem.id,
+      facebook_post_id: historyItem.facebook_post_id || null,
+      facebook_photo_id: historyItem.facebook_photo_id || null,
+      published_at: historyItem.created_at
+    });
+  } catch (err) {
+    historyItem.error = _safeString(err && err.message, 500) || "facebook publish failed";
+    _appendFacebookPublishHistory(historyItem);
+    console.error("/admin/facebook/publish failed:", err);
+    return res.status(500).json({ ok: false, error: historyItem.error || "facebook publish failed" });
+  }
+});
+
+app.get("/admin/facebook/history", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query && req.query.limit) || 20));
+    return res.json({
+      ok: true,
+      items: _readFacebookPublishHistory(limit)
+    });
+  } catch (err) {
+    console.error("/admin/facebook/history failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook history failed" });
   }
 });
 
