@@ -874,7 +874,6 @@ app.get("/admin/verify", (req, res) => {
 
 app.get("/admin/facebook/status", (req, res) => {
   allowCors(res, req);
-  if (!_requireAdmin(req, res)) return;
   try {
     return res.json({
       ok: true,
