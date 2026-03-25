@@ -1,5 +1,7 @@
 ﻿console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX) <<<");
 
+const SERVER_BUILD_TAG = "facebook-pages-connect-v3";
+
 const express = require("express");
 const archiver = require("archiver");
 const fs = require("fs");
@@ -446,6 +448,23 @@ app.use(express.json({ limit: "2mb" }));
 app.get("/ping", (req, res) => {
   allowCors(res, req);
   res.status(200).send("OK");
+});
+
+app.get("/__vm/diagnostics", (req, res) => {
+  allowCors(res, req);
+  return res.json({
+    ok: true,
+    build: SERVER_BUILD_TAG,
+    facebook: {
+      page_target: FACEBOOK_PAGE_NAME_TARGET,
+      app_id_configured: !!META_APP_ID,
+      app_secret_configured: !!META_APP_SECRET,
+      redirect_uri_configured: !!META_REDIRECT_URI,
+      oauth_success_redirect_configured: !!META_OAUTH_SUCCESS_REDIRECT,
+      oauth_error_redirect_configured: !!META_OAUTH_ERROR_REDIRECT,
+      graph_version: META_GRAPH_VERSION || null
+    }
+  });
 });
 
 
