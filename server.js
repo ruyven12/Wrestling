@@ -51,6 +51,9 @@ function _defaultFacebookConnectionRecord() {
     last_available_pages: [],
     last_error: "",
     scopes: [],
+    granted_scopes: [],
+    declined_scopes: [],
+    debug_user: null,
     updated_at: null
   };
 }
@@ -75,6 +78,12 @@ function _toPublicFacebookConnectionState(record) {
       })) : [],
       last_error: _safeString(src.last_error, 500) || "",
       scopes: Array.isArray(src.scopes) ? src.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      granted_scopes: Array.isArray(src.granted_scopes) ? src.granted_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      declined_scopes: Array.isArray(src.declined_scopes) ? src.declined_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      debug_user: src.debug_user && typeof src.debug_user === "object" ? {
+        id: _safeString(src.debug_user.id, 120),
+        name: _safeString(src.debug_user.name, 160)
+      } : null,
       updated_at: _safeString(src.updated_at, 80) || null
     };
 }
@@ -107,6 +116,12 @@ function _readFacebookConnectionRecord() {
       })) : [],
       last_error: _safeString(parsed.last_error, 500) || "",
       scopes: scopes.map((scope) => _safeString(scope, 80)).filter(Boolean),
+      granted_scopes: Array.isArray(parsed.granted_scopes) ? parsed.granted_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      declined_scopes: Array.isArray(parsed.declined_scopes) ? parsed.declined_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+      debug_user: parsed.debug_user && typeof parsed.debug_user === "object" ? {
+        id: _safeString(parsed.debug_user.id, 120),
+        name: _safeString(parsed.debug_user.name, 160)
+      } : null,
       updated_at: _safeString(parsed.updated_at, 80) || null
     };
   } catch (err) {
@@ -137,6 +152,12 @@ function _writeFacebookConnectionState(nextState) {
     })) : [],
     last_error: _safeString(next.last_error, 500) || "",
     scopes: Array.isArray(next.scopes) ? next.scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+    granted_scopes: Array.isArray(next.granted_scopes) ? next.granted_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+    declined_scopes: Array.isArray(next.declined_scopes) ? next.declined_scopes.map((scope) => _safeString(scope, 80)).filter(Boolean) : [],
+    debug_user: next.debug_user && typeof next.debug_user === "object" ? {
+      id: _safeString(next.debug_user.id, 120),
+      name: _safeString(next.debug_user.name, 160)
+    } : null,
     updated_at: new Date().toISOString()
   };
   try {
@@ -245,6 +266,29 @@ async function _fetchFacebookManagedPages(userAccessToken) {
   url.searchParams.set("access_token", String(userAccessToken || "").trim());
   const data = await _facebookJson(url.toString());
   return Array.isArray(data && data.data) ? data.data : [];
+}
+
+async function _fetchFacebookGrantedScopes(userAccessToken) {
+  const url = new URL(`${_facebookGraphBase()}/me/permissions`);
+  url.searchParams.set("access_token", String(userAccessToken || "").trim());
+  const data = await _facebookJson(url.toString());
+  const granted = [];
+  const declined = [];
+  (Array.isArray(data && data.data) ? data.data : []).forEach((item) => {
+    const permission = _safeString(item && item.permission, 80);
+    const status = _safeString(item && item.status, 40).toLowerCase();
+    if (!permission) return;
+    if (status === "granted") granted.push(permission);
+    else if (status === "declined") declined.push(permission);
+  });
+  return { granted, declined };
+}
+
+async function _fetchFacebookUserProfile(userAccessToken) {
+  const url = new URL(`${_facebookGraphBase()}/me`);
+  url.searchParams.set("fields", "id,name");
+  url.searchParams.set("access_token", String(userAccessToken || "").trim());
+  return _facebookJson(url.toString());
 }
 
 function _findTargetFacebookPage(pages) {
@@ -832,6 +876,18 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
     }
 
     const pages = await _fetchFacebookManagedPages(userAccessToken);
+    let grantedScopeInfo = { granted: [], declined: [] };
+    let debugUser = null;
+    try {
+      grantedScopeInfo = await _fetchFacebookGrantedScopes(userAccessToken);
+    } catch (scopeErr) {
+      console.warn("facebook permissions lookup failed:", scopeErr && scopeErr.message ? scopeErr.message : scopeErr);
+    }
+    try {
+      debugUser = await _fetchFacebookUserProfile(userAccessToken);
+    } catch (userErr) {
+      console.warn("facebook user profile lookup failed:", userErr && userErr.message ? userErr.message : userErr);
+    }
     const page = _findTargetFacebookPage(pages);
     if (!page || !page.id || !page.access_token) {
       const availablePages = _facebookPageSummaries(pages);
@@ -846,7 +902,10 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
           token_status: "not_connected",
           last_checked_at: new Date().toISOString(),
           last_available_pages: availablePages,
-          last_error: `unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"`
+          last_error: `unable to find target page "${FACEBOOK_PAGE_NAME_TARGET}"`,
+          granted_scopes: grantedScopeInfo.granted,
+          declined_scopes: grantedScopeInfo.declined,
+          debug_user: debugUser
         }));
       } catch (_) {}
       console.warn("facebook connect callback: target page not found", {
@@ -878,7 +937,10 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
       last_publish_at: null,
       last_available_pages: _facebookPageSummaries(pages),
       last_error: "",
-      scopes: Array.isArray(statePayload.scopes) ? statePayload.scopes : _facebookRequestedScopes()
+      scopes: Array.isArray(statePayload.scopes) ? statePayload.scopes : _facebookRequestedScopes(),
+      granted_scopes: grantedScopeInfo.granted,
+      declined_scopes: grantedScopeInfo.declined,
+      debug_user: debugUser
     });
 
     const returnTo = _safeString(statePayload.return_to, 500) || META_OAUTH_SUCCESS_REDIRECT || "";
