@@ -285,6 +285,7 @@ async function _facebookSearchPages(userAccessToken, query) {
   const token = _safeString(userAccessToken, 2000);
   const q = _safeString(query, 120);
   if (!token || !q) return [];
+  const qLower = q.toLowerCase();
   const seen = new Map();
   const endpoints = [
     (() => {
@@ -313,6 +314,7 @@ async function _facebookSearchPages(userAccessToken, query) {
         const id = _safeString(item && item.id, 120);
         const name = _safeString(item && item.name, 200);
         const category = _safeString(item && item.category, 120);
+        if (name.toLowerCase().indexOf(qLower) < 0) return;
         if (!id || !name || seen.has(id)) return;
         seen.set(id, {
           id,
@@ -333,7 +335,7 @@ async function _facebookSearchPages(userAccessToken, query) {
       const id = _safeString(item && item.id, 120);
       const name = _safeString(item && item.name, 200);
       if (!id || !name) return;
-      if (String(name).toLowerCase().indexOf(String(q).toLowerCase()) < 0) return;
+      if (name.toLowerCase().indexOf(qLower) < 0) return;
       if (seen.has(id)) return;
       seen.set(id, {
         id,
