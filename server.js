@@ -563,7 +563,7 @@ function _normalizeFacebookSelectedPhotos(input) {
 
 function _normalizeFacebookPublishMode(input) {
   const mode = _safeString(input, 32).toLowerCase();
-  return mode === "album" || mode === "both" ? mode : "post";
+  return mode === "album" || mode === "both" || mode === "share" ? mode : "post";
 }
 
 function _getFacebookDraftAlbumPhotos(draft) {
@@ -615,10 +615,10 @@ function _normalizeFacebookDraft(input) {
   if (!isNormalPost && !selectedPhotos.length && (!imageUrl || !_isHttpUrl(imageUrl))) {
     errors.push("image_url must be a valid http(s) URL");
   }
-  if (!isNormalPost && publishMode !== "post" && !facebookAlbumId) {
+  if (!isNormalPost && (publishMode === "album" || publishMode === "both") && !facebookAlbumId) {
     errors.push("facebook_album_id is required for album upload");
   }
-  if (!isNormalPost && publishMode !== "post" && !albumPhotos.length) {
+  if (!isNormalPost && (publishMode === "album" || publishMode === "both") && !albumPhotos.length) {
     errors.push("select at least one photo for album upload");
   }
 
