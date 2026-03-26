@@ -449,14 +449,15 @@ function _normalizeFacebookDraft(input) {
   const imageUrl = _safeString(body.image_url, 2000);
   const meta = _safeMeta(body.meta);
   const errors = [];
+  const isNormalPost = entityType === "normal_post";
 
   if (!section) errors.push("section is required");
   if (!entityType) errors.push("entity_type is required");
   if (!entityId) errors.push("entity_id is required");
   if (!entityLabel) errors.push("entity_label is required");
   if (!caption) errors.push("caption is required");
-  if (!imageUrl || !_isHttpUrl(imageUrl)) errors.push("image_url must be a valid http(s) URL");
-  if (!linkUrl || !_isHttpUrl(linkUrl)) errors.push("link_url must be a valid http(s) URL");
+  if (linkUrl && !_isHttpUrl(linkUrl)) errors.push("link_url must be a valid http(s) URL");
+  if (!isNormalPost && (!imageUrl || !_isHttpUrl(imageUrl))) errors.push("image_url must be a valid http(s) URL");
 
   const finalMessage = [caption, linkUrl].filter(Boolean).join("\n\n").trim();
   if (!finalMessage) errors.push("final publish message is empty");
@@ -473,11 +474,11 @@ function _normalizeFacebookDraft(input) {
       link_url: linkUrl,
       image_url: imageUrl,
       final_message: finalMessage,
-      meta
+      meta,
+      post_kind: isNormalPost ? "feed" : "photo"
     }
   };
 }
-
 function _appendFacebookPublishHistory(item) {
   if (!item || typeof item !== "object") return;
   _ensureAnalyticsDir();
@@ -529,9 +530,37 @@ async function _facebookPostPhoto(connectionRecord, draft) {
   try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
   if (!r.ok) {
     const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
-    throw new Error(`facebook publish failed: ${msg}`);
+    throw new Error(msg || "facebook photo publish failed");
   }
-  return data;
+  return data || {};
+}
+
+async function _facebookPostFeed(connectionRecord, draft) {
+  const pageId = _safeString(connectionRecord && connectionRecord.page && connectionRecord.page.id, 120);
+  const pageAccessToken = _safeString(connectionRecord && connectionRecord.page_access_token, 2000);
+  if (!pageId || !pageAccessToken) throw new Error("facebook page is not connected");
+
+  const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(pageId)}/feed`);
+  const body = new URLSearchParams();
+  body.set("message", String(draft.final_message || "").trim());
+  body.set("access_token", pageAccessToken);
+
+  const r = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+  if (!r.ok) {
+    const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+    throw new Error(msg || "facebook feed publish failed");
+  }
+  return data || {};
 }
 
 // =========================================================
@@ -1171,10 +1200,14 @@ app.post("/admin/facebook/publish", async (req, res) => {
     historyItem.page_id = _safeString(record.page.id, 120);
     historyItem.page_name = _safeString(record.page.name, 160);
 
-    const publishResult = await _facebookPostPhoto(record, draft);
+    const publishResult = draft.post_kind === "feed"
+      ? await _facebookPostFeed(record, draft)
+      : await _facebookPostPhoto(record, draft);
     historyItem.status = "success";
-    historyItem.facebook_post_id = _safeString(publishResult && publishResult.post_id, 240);
-    historyItem.facebook_photo_id = _safeString(publishResult && publishResult.id, 240);
+    historyItem.facebook_post_id = _safeString((publishResult && (publishResult.post_id || publishResult.id)), 240);
+    historyItem.facebook_photo_id = draft.post_kind === "photo"
+      ? _safeString(publishResult && publishResult.id, 240)
+      : "";
     _appendFacebookPublishHistory(historyItem);
 
     _writeFacebookConnectionState(Object.assign({}, record, {
@@ -2905,6 +2938,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
