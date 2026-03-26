@@ -834,18 +834,19 @@ async function _facebookPostMultiPhoto(connectionRecord, draft, preUploaded) {
   return _facebookPostFeedWithUploadedMedia(connectionRecord, draft, uploaded);
 }
 
-async function _facebookUploadDraftPhotosToAlbum(connectionRecord, draft) {
+async function _facebookUploadDraftPhotosToAlbum(connectionRecord, draft, options) {
   const albumId = _safeString(draft && draft.facebook_album_id, 160);
   if (!albumId) throw new Error("facebook_album_id is required for album upload");
   const photos = _getFacebookDraftAlbumPhotos(draft);
   if (!photos.length) throw new Error("select at least one photo for album upload");
 
+  const opts = options && typeof options === "object" ? options : {};
   const uploaded = [];
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
-    const result = await _facebookUploadPhotoToAlbum(connectionRecord, albumId, photo && photo.image_url, {
-      published: false
-    });
+    const uploadOptions = {};
+    if (opts.published === false) uploadOptions.published = false;
+    const result = await _facebookUploadPhotoToAlbum(connectionRecord, albumId, photo && photo.image_url, uploadOptions);
     const mediaId = _safeString(result && result.id, 240);
     if (!mediaId) throw new Error("facebook album upload did not return a media id");
     uploaded.push({
