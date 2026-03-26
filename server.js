@@ -281,6 +281,74 @@ async function _fetchFacebookPageById(userAccessToken, pageId) {
   return data && typeof data === "object" ? data : null;
 }
 
+async function _facebookSearchPages(userAccessToken, query) {
+  const token = _safeString(userAccessToken, 2000);
+  const q = _safeString(query, 120);
+  if (!token || !q) return [];
+  const seen = new Map();
+  const endpoints = [
+    (() => {
+      const url = new URL(`${_facebookGraphBase()}/search`);
+      url.searchParams.set("type", "page");
+      url.searchParams.set("q", q);
+      url.searchParams.set("fields", "id,name,category");
+      url.searchParams.set("limit", "8");
+      url.searchParams.set("access_token", token);
+      return url.toString();
+    })(),
+    (() => {
+      const url = new URL(`${_facebookGraphBase()}/pages/search`);
+      url.searchParams.set("q", q);
+      url.searchParams.set("limit", "8");
+      url.searchParams.set("access_token", token);
+      return url.toString();
+    })()
+  ];
+
+  for (let i = 0; i < endpoints.length; i++) {
+    try {
+      const data = await _facebookJson(endpoints[i]);
+      const items = Array.isArray(data && data.data) ? data.data : [];
+      items.forEach((item) => {
+        const id = _safeString(item && item.id, 120);
+        const name = _safeString(item && item.name, 200);
+        const category = _safeString(item && item.category, 120);
+        if (!id || !name || seen.has(id)) return;
+        seen.set(id, {
+          id,
+          page_id: id,
+          name,
+          label: name,
+          subtitle: category || "Facebook Page",
+          handle: ""
+        });
+      });
+      if (seen.size) break;
+    } catch (_) {}
+  }
+
+  try {
+    const managed = await _fetchFacebookManagedPages(token);
+    managed.forEach((item) => {
+      const id = _safeString(item && item.id, 120);
+      const name = _safeString(item && item.name, 200);
+      if (!id || !name) return;
+      if (String(name).toLowerCase().indexOf(String(q).toLowerCase()) < 0) return;
+      if (seen.has(id)) return;
+      seen.set(id, {
+        id,
+        page_id: id,
+        name,
+        label: name,
+        subtitle: "Managed Page",
+        handle: ""
+      });
+    });
+  } catch (_) {}
+
+  return Array.from(seen.values()).slice(0, 8);
+}
+
 async function _fetchFacebookGrantedScopes(userAccessToken) {
   const url = new URL(`${_facebookGraphBase()}/me/permissions`);
   url.searchParams.set("access_token", String(userAccessToken || "").trim());
@@ -913,6 +981,25 @@ app.get("/admin/facebook/status", (req, res) => {
   } catch (err) {
     console.error("/admin/facebook/status failed:", err);
     return res.status(500).json({ ok: false, error: "facebook status failed" });
+  }
+});
+
+app.get("/admin/facebook/mentions/search", async (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const q = _safeString(req.query && req.query.q, 120);
+    if (!q) return res.json({ ok: true, items: [] });
+    const record = _readFacebookConnectionRecord();
+    const userAccessToken = _safeString(record && record.user_access_token, 2000);
+    if (!userAccessToken) {
+      return res.status(400).json({ ok: false, error: "facebook page is not connected" });
+    }
+    const items = await _facebookSearchPages(userAccessToken, q);
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("/admin/facebook/mentions/search failed:", err);
+    return res.status(500).json({ ok: false, error: "facebook mention search failed" });
   }
 });
 
