@@ -281,12 +281,44 @@ async function _fetchFacebookPageById(userAccessToken, pageId) {
   return data && typeof data === "object" ? data : null;
 }
 
+function _facebookMentionCandidateMatchesQuery(query, candidate) {
+  const q = _safeString(query, 120).toLowerCase();
+  if (!q) return false;
+  const text = _safeString(candidate, 240).toLowerCase();
+  if (!text) return false;
+  const qNorm = q.replace(/[^a-z0-9]+/g, "");
+  const textNorm = text.replace(/[^a-z0-9]+/g, "");
+  return text.indexOf(q) >= 0 || (!!qNorm && !!textNorm && textNorm.indexOf(qNorm) >= 0);
+}
+
 async function _facebookSearchPages(userAccessToken, query) {
   const token = _safeString(userAccessToken, 2000);
   const q = _safeString(query, 120);
   if (!token || !q) return [];
-  const qLower = q.toLowerCase();
   const seen = new Map();
+  const pushResult = (item) => {
+    const row = item && typeof item === "object" ? item : {};
+    const id = _safeString(row.id || row.page_id, 120);
+    const name = _safeString(row.name || row.label, 200);
+    const subtitle = _safeString(row.subtitle || row.category || row.type, 120) || "Facebook Page";
+    if (!id || !name) return;
+    if (
+      !_facebookMentionCandidateMatchesQuery(q, name) &&
+      !_facebookMentionCandidateMatchesQuery(q, subtitle) &&
+      !_facebookMentionCandidateMatchesQuery(q, id)
+    ) {
+      return;
+    }
+    if (seen.has(id)) return;
+    seen.set(id, {
+      id,
+      page_id: id,
+      name,
+      label: name,
+      subtitle,
+      handle: ""
+    });
+  };
   const endpoints = [
     (() => {
       const url = new URL(`${_facebookGraphBase()}/search`);
@@ -311,18 +343,10 @@ async function _facebookSearchPages(userAccessToken, query) {
       const data = await _facebookJson(endpoints[i]);
       const items = Array.isArray(data && data.data) ? data.data : [];
       items.forEach((item) => {
-        const id = _safeString(item && item.id, 120);
-        const name = _safeString(item && item.name, 200);
-        const category = _safeString(item && item.category, 120);
-        if (name.toLowerCase().indexOf(qLower) < 0) return;
-        if (!id || !name || seen.has(id)) return;
-        seen.set(id, {
-          id,
-          page_id: id,
-          name,
-          label: name,
-          subtitle: category || "Facebook Page",
-          handle: ""
+        pushResult({
+          id: item && item.id,
+          name: item && item.name,
+          subtitle: item && item.category
         });
       });
       if (seen.size) break;
@@ -332,19 +356,34 @@ async function _facebookSearchPages(userAccessToken, query) {
   try {
     const managed = await _fetchFacebookManagedPages(token);
     managed.forEach((item) => {
-      const id = _safeString(item && item.id, 120);
-      const name = _safeString(item && item.name, 200);
-      if (!id || !name) return;
-      if (name.toLowerCase().indexOf(qLower) < 0) return;
-      if (seen.has(id)) return;
-      seen.set(id, {
-        id,
-        page_id: id,
-        name,
-        label: name,
-        subtitle: "Managed Page",
-        handle: ""
+      pushResult({
+        id: item && item.id,
+        name: item && item.name,
+        subtitle: "Managed Page"
       });
+    });
+  } catch (_) {}
+
+  try {
+    const record = _readFacebookConnectionRecord();
+    const page = record && record.page && typeof record.page === "object" ? record.page : {};
+    pushResult({
+      id: page && page.id,
+      name: page && page.name,
+      subtitle: "Connected Page"
+    });
+    const savedPages = Array.isArray(record && record.last_available_pages) ? record.last_available_pages : [];
+    savedPages.forEach((item) => {
+      pushResult({
+        id: item && item.id,
+        name: item && item.name,
+        subtitle: "Saved Page"
+      });
+    });
+    pushResult({
+      id: FACEBOOK_PAGE_ID_TARGET,
+      name: FACEBOOK_PAGE_NAME_TARGET,
+      subtitle: "Configured Target Page"
     });
   } catch (_) {}
 
