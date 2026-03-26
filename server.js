@@ -841,11 +841,16 @@ async function _facebookUploadDraftPhotosToAlbum(connectionRecord, draft, option
   if (!photos.length) throw new Error("select at least one photo for album upload");
 
   const opts = options && typeof options === "object" ? options : {};
+  const albumCaption = _safeString(
+    opts.caption != null ? opts.caption : (draft && draft.final_message),
+    5000
+  );
   const uploaded = [];
   for (let i = 0; i < photos.length; i++) {
     const photo = photos[i];
     const uploadOptions = {};
     if (opts.published === false) uploadOptions.published = false;
+    if (albumCaption) uploadOptions.caption = albumCaption;
     const result = await _facebookUploadPhotoToAlbum(connectionRecord, albumId, photo && photo.image_url, uploadOptions);
     const mediaId = _safeString(result && result.id, 240);
     if (!mediaId) throw new Error("facebook album upload did not return a media id");
@@ -1584,9 +1589,11 @@ app.post("/admin/facebook/publish", async (req, res) => {
     const publishResult = draft.publish_mode === "album"
       ? { uploaded_photos: albumUploads }
       : (draft.publish_mode === "both"
-        ? (albumUploads.length
-          ? await _facebookPostFeedWithUploadedMedia(record, draft, albumUploads)
-          : await _facebookPostFeed(record, draft))
+        ? (draft.post_kind === "feed"
+          ? await _facebookPostFeed(record, draft)
+          : (draft.post_kind === "multi_photo"
+            ? await _facebookPostMultiPhoto(record, draft)
+            : await _facebookPostPhoto(record, draft)))
         : (draft.post_kind === "feed"
           ? await _facebookPostFeed(record, draft)
           : (draft.post_kind === "multi_photo"
