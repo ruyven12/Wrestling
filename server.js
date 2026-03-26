@@ -561,6 +561,27 @@ function _normalizeFacebookSelectedPhotos(input) {
   }).filter((item) => item.image_url && _isHttpUrl(item.image_url));
 }
 
+function _normalizeFacebookPublishMode(input) {
+  const mode = _safeString(input, 32).toLowerCase();
+  return mode === "album" || mode === "both" ? mode : "post";
+}
+
+function _getFacebookDraftAlbumPhotos(draft) {
+  const row = draft && typeof draft === "object" ? draft : {};
+  const selected = Array.isArray(row.selected_photos) ? row.selected_photos : [];
+  if (selected.length) return selected;
+  const imageUrl = _safeString(row.image_url, 2000);
+  if (!imageUrl || !_isHttpUrl(imageUrl)) return [];
+  return [{
+    id: "",
+    entity_id: _safeString(row.entity_id, 160),
+    title: _safeString(row.entity_label, 240),
+    image_url: imageUrl,
+    route_url: _safeString(row.link_url, 2000),
+    route_path: ""
+  }];
+}
+
 function _normalizeFacebookDraft(input) {
   const body = input && typeof input === "object" ? input : {};
   const section = _safeString(body.section, 32).toLowerCase();
@@ -571,9 +592,19 @@ function _normalizeFacebookDraft(input) {
   const linkUrl = _safeString(body.link_url, 2000);
   const imageUrl = _safeString(body.image_url, 2000);
   const selectedPhotos = _normalizeFacebookSelectedPhotos(body.selected_photos);
+  const publishMode = _normalizeFacebookPublishMode(body.publish_mode);
+  const facebookAlbumId = _safeString(body.facebook_album_id, 160);
+  const facebookAlbumName = _safeString(body.facebook_album_name, 240);
   const meta = _safeMeta(body.meta);
   const errors = [];
   const isNormalPost = entityType === "normal_post";
+  const albumPhotos = _getFacebookDraftAlbumPhotos({
+    entity_id: entityId,
+    entity_label: entityLabel,
+    image_url: imageUrl,
+    link_url: linkUrl,
+    selected_photos: selectedPhotos
+  });
 
   if (!section) errors.push("section is required");
   if (!entityType) errors.push("entity_type is required");
@@ -583,6 +614,12 @@ function _normalizeFacebookDraft(input) {
   if (linkUrl && !_isHttpUrl(linkUrl)) errors.push("link_url must be a valid http(s) URL");
   if (!isNormalPost && !selectedPhotos.length && (!imageUrl || !_isHttpUrl(imageUrl))) {
     errors.push("image_url must be a valid http(s) URL");
+  }
+  if (!isNormalPost && publishMode !== "post" && !facebookAlbumId) {
+    errors.push("facebook_album_id is required for album upload");
+  }
+  if (!isNormalPost && publishMode !== "post" && !albumPhotos.length) {
+    errors.push("select at least one photo for album upload");
   }
 
   const finalMessage = [caption, linkUrl].filter(Boolean).join("\n\n").trim();
@@ -600,6 +637,9 @@ function _normalizeFacebookDraft(input) {
       link_url: linkUrl,
       image_url: imageUrl,
       selected_photos: selectedPhotos,
+      publish_mode: publishMode,
+      facebook_album_id: facebookAlbumId,
+      facebook_album_name: facebookAlbumName,
       final_message: finalMessage,
       meta,
       post_kind: isNormalPost ? "feed" : (selectedPhotos.length > 1 ? "multi_photo" : "photo")
@@ -664,34 +704,78 @@ async function _facebookUploadPhoto(connectionRecord, imageUrl, options) {
   return data || {};
 }
 
+async function _facebookUploadPhotoToAlbum(connectionRecord, albumId, imageUrl, options) {
+  const pageAccessToken = _safeString(connectionRecord && connectionRecord.page_access_token, 2000);
+  const cleanAlbumId = _safeString(albumId, 160);
+  if (!cleanAlbumId || !pageAccessToken) throw new Error("facebook album upload is not ready");
+
+  const opts = options && typeof options === "object" ? options : {};
+  const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(cleanAlbumId)}/photos`);
+  const body = new URLSearchParams();
+  body.set("url", String(imageUrl || "").trim());
+  body.set("access_token", pageAccessToken);
+  if (opts.caption) body.set("caption", String(opts.caption).trim());
+  if (opts.published === false) body.set("published", "false");
+
+  const r = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+  if (!r.ok) {
+    const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+    throw new Error(msg || "facebook album photo upload failed");
+  }
+  return data || {};
+}
+
+async function _facebookListAlbums(connectionRecord) {
+  const pageId = _safeString(connectionRecord && connectionRecord.page && connectionRecord.page.id, 120);
+  const pageAccessToken = _safeString(connectionRecord && connectionRecord.page_access_token, 2000);
+  if (!pageId || !pageAccessToken) throw new Error("facebook page is not connected");
+
+  const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(pageId)}/albums`);
+  url.searchParams.set("fields", "id,name,type,count,can_upload,created_time");
+  url.searchParams.set("limit", "100");
+  url.searchParams.set("access_token", pageAccessToken);
+
+  const r = await fetch(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  });
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+  if (!r.ok) {
+    const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+    throw new Error(msg || "facebook album lookup failed");
+  }
+  return Array.isArray(data && data.data) ? data.data : [];
+}
+
 async function _facebookPostPhoto(connectionRecord, draft) {
   return _facebookUploadPhoto(connectionRecord, draft.image_url, {
     caption: String(draft.final_message || "").trim()
   });
 }
 
-async function _facebookPostMultiPhoto(connectionRecord, draft) {
+async function _facebookPostFeedWithUploadedMedia(connectionRecord, draft, preUploaded) {
   const pageId = _safeString(connectionRecord && connectionRecord.page && connectionRecord.page.id, 120);
   const pageAccessToken = _safeString(connectionRecord && connectionRecord.page_access_token, 2000);
   if (!pageId || !pageAccessToken) throw new Error("facebook page is not connected");
 
-  const selectedPhotos = Array.isArray(draft && draft.selected_photos) ? draft.selected_photos : [];
-  if (!selectedPhotos.length) {
-    throw new Error("selected_photos are required for a multi-photo post");
-  }
-
-  const uploaded = [];
-  for (let i = 0; i < selectedPhotos.length; i++) {
-    const photo = selectedPhotos[i];
-    const result = await _facebookUploadPhoto(connectionRecord, photo && photo.image_url, {
-      published: false
-    });
-    const mediaId = _safeString(result && result.id, 240);
-    if (!mediaId) throw new Error("facebook multi-photo upload did not return a media id");
-    uploaded.push({
-      media_fbid: mediaId,
-      source_url: _safeString(photo && photo.image_url, 2000)
-    });
+  const uploaded = (Array.isArray(preUploaded) ? preUploaded : []).map((item) => ({
+    media_fbid: _safeString(item && item.media_fbid, 240),
+    source_url: _safeString(item && item.source_url, 2000)
+  })).filter((item) => item.media_fbid);
+  if (!uploaded.length) {
+    throw new Error("uploaded facebook media is required for a feed post");
   }
 
   const url = new URL(`${_facebookGraphBase()}/${encodeURIComponent(pageId)}/feed`);
@@ -719,6 +803,58 @@ async function _facebookPostMultiPhoto(connectionRecord, draft) {
   }
   data.uploaded_photos = uploaded;
   return data || {};
+}
+
+async function _facebookPostMultiPhoto(connectionRecord, draft, preUploaded) {
+  const selectedPhotos = Array.isArray(draft && draft.selected_photos) ? draft.selected_photos : [];
+  if (!selectedPhotos.length && !(Array.isArray(preUploaded) && preUploaded.length)) {
+    throw new Error("selected_photos are required for a multi-photo post");
+  }
+
+  const uploaded = (Array.isArray(preUploaded) ? preUploaded : []).map((item) => ({
+    media_fbid: _safeString(item && item.media_fbid, 240),
+    source_url: _safeString(item && item.source_url, 2000)
+  })).filter((item) => item.media_fbid);
+
+  if (!uploaded.length) {
+    for (let i = 0; i < selectedPhotos.length; i++) {
+      const photo = selectedPhotos[i];
+      const result = await _facebookUploadPhoto(connectionRecord, photo && photo.image_url, {
+        published: false
+      });
+      const mediaId = _safeString(result && result.id, 240);
+      if (!mediaId) throw new Error("facebook multi-photo upload did not return a media id");
+      uploaded.push({
+        media_fbid: mediaId,
+        source_url: _safeString(photo && photo.image_url, 2000)
+      });
+    }
+  }
+
+  return _facebookPostFeedWithUploadedMedia(connectionRecord, draft, uploaded);
+}
+
+async function _facebookUploadDraftPhotosToAlbum(connectionRecord, draft) {
+  const albumId = _safeString(draft && draft.facebook_album_id, 160);
+  if (!albumId) throw new Error("facebook_album_id is required for album upload");
+  const photos = _getFacebookDraftAlbumPhotos(draft);
+  if (!photos.length) throw new Error("select at least one photo for album upload");
+
+  const uploaded = [];
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i];
+    const result = await _facebookUploadPhotoToAlbum(connectionRecord, albumId, photo && photo.image_url, {
+      published: false
+    });
+    const mediaId = _safeString(result && result.id, 240);
+    if (!mediaId) throw new Error("facebook album upload did not return a media id");
+    uploaded.push({
+      media_fbid: mediaId,
+      source_url: _safeString(photo && photo.image_url, 2000),
+      album_id: albumId
+    });
+  }
+  return uploaded;
 }
 
 async function _facebookPostFeed(connectionRecord, draft) {
@@ -1312,6 +1448,30 @@ app.post("/admin/facebook/disconnect", (req, res) => {
   }
 });
 
+app.get("/admin/facebook/albums", async (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const record = _readFacebookConnectionRecord();
+    if (!record.connected || !record.page_access_token || !(record.page && record.page.id)) {
+      return res.status(400).json({ ok: false, error: "facebook page is not connected" });
+    }
+    const items = (await _facebookListAlbums(record))
+      .map((item) => ({
+        id: _safeString(item && item.id, 160),
+        name: _safeString(item && item.name, 240),
+        type: _safeString(item && item.type, 80),
+        count: Number(item && item.count)
+      }))
+      .filter((item) => item.id && item.name)
+      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("/admin/facebook/albums failed:", err);
+    return res.status(500).json({ ok: false, error: err && err.message ? err.message : "facebook albums failed" });
+  }
+});
+
 app.post("/admin/facebook/preview", (req, res) => {
   allowCors(res, req);
   if (!_requireAdmin(req, res)) return;
@@ -1341,6 +1501,9 @@ app.post("/admin/facebook/preview", (req, res) => {
         image_url: normalized.draft.image_url,
         selected_photos: normalized.draft.selected_photos,
         photo_count: Array.isArray(normalized.draft.selected_photos) ? normalized.draft.selected_photos.length : 0,
+        publish_mode: normalized.draft.publish_mode,
+        facebook_album_id: normalized.draft.facebook_album_id,
+        facebook_album_name: normalized.draft.facebook_album_name,
         final_message: normalized.draft.final_message,
         meta: normalized.draft.meta
       }
@@ -1397,7 +1560,10 @@ app.post("/admin/facebook/publish", async (req, res) => {
     historyItem.final_message = draft.final_message;
     historyItem.meta = Object.assign({}, draft.meta || {}, {
       selected_photos: Array.isArray(draft.selected_photos) ? draft.selected_photos : [],
-      photo_count: Array.isArray(draft.selected_photos) ? draft.selected_photos.length : 0
+      photo_count: Array.isArray(draft.selected_photos) ? draft.selected_photos.length : 0,
+      publish_mode: draft.publish_mode,
+      facebook_album_id: draft.facebook_album_id,
+      facebook_album_name: draft.facebook_album_name
     });
 
     const record = _readFacebookConnectionRecord();
@@ -1410,17 +1576,34 @@ app.post("/admin/facebook/publish", async (req, res) => {
     historyItem.page_id = _safeString(record.page.id, 120);
     historyItem.page_name = _safeString(record.page.name, 160);
 
-    const publishResult = draft.post_kind === "feed"
-      ? await _facebookPostFeed(record, draft)
-      : (draft.post_kind === "multi_photo"
-        ? await _facebookPostMultiPhoto(record, draft)
-        : await _facebookPostPhoto(record, draft));
+    const albumUploads = draft.publish_mode === "album" || draft.publish_mode === "both"
+      ? await _facebookUploadDraftPhotosToAlbum(record, draft)
+      : [];
+
+    const publishResult = draft.publish_mode === "album"
+      ? { uploaded_photos: albumUploads }
+      : (draft.publish_mode === "both"
+        ? (albumUploads.length
+          ? await _facebookPostFeedWithUploadedMedia(record, draft, albumUploads)
+          : await _facebookPostFeed(record, draft))
+        : (draft.post_kind === "feed"
+          ? await _facebookPostFeed(record, draft)
+          : (draft.post_kind === "multi_photo"
+            ? await _facebookPostMultiPhoto(record, draft)
+            : await _facebookPostPhoto(record, draft))));
+
     historyItem.status = "success";
-    historyItem.facebook_post_id = _safeString((publishResult && (publishResult.post_id || publishResult.id)), 240);
-    historyItem.facebook_photo_id = draft.post_kind === "photo"
+    historyItem.facebook_post_id = draft.publish_mode === "album"
+      ? ""
+      : _safeString((publishResult && (publishResult.post_id || publishResult.id)), 240);
+    historyItem.facebook_photo_id = (draft.post_kind === "photo" && draft.publish_mode === "post")
       ? _safeString(publishResult && publishResult.id, 240)
       : "";
-    if (draft.post_kind === "multi_photo") {
+    historyItem.meta = Object.assign({}, historyItem.meta || {}, {
+      uploaded_album_photo_ids: albumUploads.map((item) => _safeString(item && item.media_fbid, 240)).filter(Boolean),
+      album_upload_count: albumUploads.length
+    });
+    if ((draft.post_kind === "multi_photo" || draft.publish_mode === "both") && draft.publish_mode !== "album") {
       historyItem.meta = Object.assign({}, historyItem.meta || {}, {
         uploaded_photo_ids: Array.isArray(publishResult && publishResult.uploaded_photos)
           ? publishResult.uploaded_photos.map((item) => _safeString(item && item.media_fbid, 240)).filter(Boolean)
@@ -1441,6 +1624,9 @@ app.post("/admin/facebook/publish", async (req, res) => {
       facebook_post_id: historyItem.facebook_post_id || null,
       facebook_photo_id: historyItem.facebook_photo_id || null,
       photo_count: Array.isArray(draft.selected_photos) ? draft.selected_photos.length : (draft.image_url ? 1 : 0),
+      album_upload_count: albumUploads.length,
+      publish_mode: draft.publish_mode,
+      facebook_album_id: draft.facebook_album_id || null,
       published_at: historyItem.created_at
     });
   } catch (err) {
