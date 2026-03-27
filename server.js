@@ -953,8 +953,10 @@ function _normalizeInstagramDraft(input) {
   const entityLabel = _safeString(body.entity_label, 240);
   const caption = _safeString(body.caption, 5000);
   const linkUrl = _safeString(body.link_url, 2000);
-  const imageUrl = _safeString(body.image_url, 2000);
-  const selectedPhotos = _normalizeFacebookSelectedPhotos(body.selected_photos);
+  const imageUrl = _toInstagramPublishImageUrl(_safeString(body.image_url, 2000));
+  const selectedPhotos = _normalizeFacebookSelectedPhotos(body.selected_photos).map((item) => Object.assign({}, item, {
+    image_url: _toInstagramPublishImageUrl(item && item.image_url)
+  })).filter((item) => _safeString(item && item.image_url, 2000));
   const meta = _safeMeta(body.meta);
   const errors = [];
 
@@ -1605,6 +1607,26 @@ function _safeMeta(value) {
   } catch (_) {
     return {};
   }
+}
+
+function _publicBackendBaseUrl() {
+  const configured =
+    _safeString(process.env.PUBLIC_BACKEND_BASE_URL, 400) ||
+    _safeString(process.env.PUBLIC_API_BASE_URL, 400);
+  if (configured) return configured.replace(/\/$/, "");
+  try {
+    const fromRedirect = new URL(String(META_INSTAGRAM_REDIRECT_URI || META_REDIRECT_URI || "").trim());
+    return `${fromRedirect.protocol}//${fromRedirect.host}`;
+  } catch (_) {}
+  return "https://wrestling-archive.onrender.com";
+}
+
+function _toInstagramPublishImageUrl(rawUrl) {
+  const source = _safeString(rawUrl, 2000);
+  if (!source || !_isHttpUrl(source)) return "";
+  const backendBase = _publicBackendBaseUrl();
+  if (source.indexOf(`${backendBase}/show-poster?`) === 0) return source;
+  return `${backendBase}/show-poster?url=${encodeURIComponent(source)}`;
 }
 
 function _normalizeAnalyticsEvent(input) {
