@@ -47,7 +47,9 @@ function _instagramRequestedScopes() {
   return [
     "pages_show_list",
     "pages_read_engagement",
-    "instagram_business_basic"
+    "instagram_basic",
+    "instagram_content_publish",
+    "instagram_manage_comments"
   ];
 }
 
