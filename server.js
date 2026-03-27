@@ -17,6 +17,7 @@ const ANALYTICS_EVENTS_FILE = path.join(ANALYTICS_DIR, "analytics-events.ndjson"
 const FACEBOOK_CONNECTION_FILE = path.join(ANALYTICS_DIR, "facebook-page-connection.json");
 const FACEBOOK_PUBLISH_HISTORY_FILE = path.join(ANALYTICS_DIR, "facebook-publish-history.ndjson");
 const INSTAGRAM_CONNECTION_FILE = path.join(ANALYTICS_DIR, "instagram-connection.json");
+const INSTAGRAM_PUBLISH_HISTORY_FILE = path.join(ANALYTICS_DIR, "instagram-publish-history.ndjson");
 const FACEBOOK_PAGE_NAME_TARGET = String(process.env.FACEBOOK_PAGE_NAME_TARGET || "Voodoo Media").trim();
 const FACEBOOK_PAGE_ID_TARGET = String(process.env.FACEBOOK_PAGE_ID_TARGET || "766767130020404").trim();
 const INSTAGRAM_ACCOUNT_NAME_TARGET = String(process.env.INSTAGRAM_ACCOUNT_NAME_TARGET || "").trim();
@@ -943,6 +944,52 @@ function _normalizeFacebookDraft(input) {
     }
   };
 }
+
+function _normalizeInstagramDraft(input) {
+  const body = input && typeof input === "object" ? input : {};
+  const section = _safeString(body.section, 32).toLowerCase();
+  const entityType = _safeString(body.entity_type, 32).toLowerCase() || "show";
+  const entityId = _safeString(body.entity_id, 160);
+  const entityLabel = _safeString(body.entity_label, 240);
+  const caption = _safeString(body.caption, 5000);
+  const linkUrl = _safeString(body.link_url, 2000);
+  const imageUrl = _safeString(body.image_url, 2000);
+  const selectedPhotos = _normalizeFacebookSelectedPhotos(body.selected_photos);
+  const meta = _safeMeta(body.meta);
+  const errors = [];
+
+  if (!section) errors.push("section is required");
+  if (!entityType) errors.push("entity_type is required");
+  if (!entityId) errors.push("entity_id is required");
+  if (!entityLabel) errors.push("entity_label is required");
+  if (!caption) errors.push("caption is required");
+  if (linkUrl && !_isHttpUrl(linkUrl)) errors.push("link_url must be a valid http(s) URL");
+  if (!selectedPhotos.length && (!imageUrl || !_isHttpUrl(imageUrl))) {
+    errors.push("image_url must be a valid http(s) URL");
+  }
+
+  const finalMessage = [caption, linkUrl].filter(Boolean).join("\n\n").trim();
+  if (!finalMessage) errors.push("final publish message is empty");
+
+  return {
+    ok: errors.length === 0,
+    errors,
+    draft: {
+      section,
+      entity_type: entityType,
+      entity_id: entityId,
+      entity_label: entityLabel,
+      caption,
+      link_url: linkUrl,
+      image_url: imageUrl,
+      selected_photos: selectedPhotos,
+      final_message: finalMessage,
+      meta,
+      post_kind: selectedPhotos.length > 1 ? "carousel" : "photo"
+    }
+  };
+}
+
 function _appendFacebookPublishHistory(item) {
   if (!item || typeof item !== "object") return;
   _ensureAnalyticsDir();
@@ -966,6 +1013,33 @@ function _readFacebookPublishHistory(limit) {
     return items.slice(-max).reverse();
   } catch (err) {
     console.error("facebook publish history read failed:", err);
+    return [];
+  }
+}
+
+function _appendInstagramPublishHistory(item) {
+  if (!item || typeof item !== "object") return;
+  _ensureAnalyticsDir();
+  fs.appendFileSync(INSTAGRAM_PUBLISH_HISTORY_FILE, JSON.stringify(item) + "\n", "utf8");
+}
+
+function _readInstagramPublishHistory(limit) {
+  try {
+    if (!fs.existsSync(INSTAGRAM_PUBLISH_HISTORY_FILE)) return [];
+    const raw = fs.readFileSync(INSTAGRAM_PUBLISH_HISTORY_FILE, "utf8");
+    if (!raw.trim()) return [];
+    const items = raw
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try { return JSON.parse(line); } catch (_) { return null; }
+      })
+      .filter(Boolean);
+    const max = Math.max(1, Number(limit) || 20);
+    return items.slice(-max).reverse();
+  } catch (err) {
+    console.error("instagram publish history read failed:", err);
     return [];
   }
 }
@@ -1158,6 +1232,167 @@ async function _facebookUploadDraftPhotosToAlbum(connectionRecord, draft, option
     });
   }
   return uploaded;
+}
+
+function _instagramAccessToken(connectionRecord) {
+  return _safeString(
+    connectionRecord && (connectionRecord.user_access_token || connectionRecord.page_access_token),
+    2000
+  );
+}
+
+function _instagramGraphBase() {
+  return `https://graph.facebook.com/${META_GRAPH_VERSION}`;
+}
+
+async function _instagramJsonRequest(url, init) {
+  const r = await fetch(url, init);
+  const text = await r.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch (_) { data = { raw: text }; }
+  if (!r.ok) {
+    const msg = data && data.error && data.error.message ? data.error.message : `HTTP ${r.status}`;
+    throw new Error(msg || "instagram request failed");
+  }
+  return data || {};
+}
+
+async function _instagramCreateMediaContainer(connectionRecord, params) {
+  const igUserId = _safeString(connectionRecord && connectionRecord.instagram_account && connectionRecord.instagram_account.id, 120);
+  const accessToken = _instagramAccessToken(connectionRecord);
+  if (!igUserId || !accessToken) throw new Error("instagram account is not connected");
+  const body = new URLSearchParams();
+  Object.keys(params || {}).forEach((key) => {
+    const value = params[key];
+    if (value == null || value === "") return;
+    body.set(key, String(value));
+  });
+  body.set("access_token", accessToken);
+  const url = `${_instagramGraphBase()}/${encodeURIComponent(igUserId)}/media`;
+  return _instagramJsonRequest(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+}
+
+async function _instagramPublishContainer(connectionRecord, creationId) {
+  const igUserId = _safeString(connectionRecord && connectionRecord.instagram_account && connectionRecord.instagram_account.id, 120);
+  const accessToken = _instagramAccessToken(connectionRecord);
+  if (!igUserId || !accessToken) throw new Error("instagram account is not connected");
+  const body = new URLSearchParams();
+  body.set("creation_id", _safeString(creationId, 240));
+  body.set("access_token", accessToken);
+  const url = `${_instagramGraphBase()}/${encodeURIComponent(igUserId)}/media_publish`;
+  return _instagramJsonRequest(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+}
+
+async function _instagramReadContainer(connectionRecord, creationId) {
+  const accessToken = _instagramAccessToken(connectionRecord);
+  const id = _safeString(creationId, 240);
+  if (!id || !accessToken) throw new Error("instagram container is not available");
+  const url = new URL(`${_instagramGraphBase()}/${encodeURIComponent(id)}`);
+  url.searchParams.set("fields", "id,status_code,status,error_message");
+  url.searchParams.set("access_token", accessToken);
+  return _instagramJsonRequest(url.toString(), {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  });
+}
+
+async function _instagramWaitForContainer(connectionRecord, creationId) {
+  const id = _safeString(creationId, 240);
+  if (!id) throw new Error("instagram container id missing");
+  let last = null;
+  for (let i = 0; i < 15; i++) {
+    last = await _instagramReadContainer(connectionRecord, id);
+    const status = _safeString(last && (last.status_code || last.status), 80).toUpperCase();
+    if (!status || status === "FINISHED" || status === "PUBLISHED") return last;
+    if (status === "ERROR" || status === "EXPIRED") {
+      throw new Error(_safeString(last && last.error_message, 500) || `instagram container ${status.toLowerCase()}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return last || {};
+}
+
+async function _instagramPublishSingleImage(connectionRecord, draft) {
+  const imageUrl = _safeString(
+    (Array.isArray(draft && draft.selected_photos) && draft.selected_photos[0] && draft.selected_photos[0].image_url) ||
+    (draft && draft.image_url),
+    2000
+  );
+  if (!imageUrl) throw new Error("instagram image url is required");
+  const container = await _instagramCreateMediaContainer(connectionRecord, {
+    image_url: imageUrl,
+    caption: _safeString(draft && draft.final_message, 5000)
+  });
+  const creationId = _safeString(container && container.id, 240);
+  if (!creationId) throw new Error("instagram media container was not created");
+  await _instagramWaitForContainer(connectionRecord, creationId);
+  const published = await _instagramPublishContainer(connectionRecord, creationId);
+  return {
+    creation_id: creationId,
+    id: _safeString(published && published.id, 240),
+    media_type: "IMAGE"
+  };
+}
+
+async function _instagramPublishCarousel(connectionRecord, draft) {
+  const photos = Array.isArray(draft && draft.selected_photos) ? draft.selected_photos : [];
+  const items = photos.length ? photos : [{ image_url: _safeString(draft && draft.image_url, 2000) }];
+  if (items.length < 2) return _instagramPublishSingleImage(connectionRecord, draft);
+
+  const childIds = [];
+  for (let i = 0; i < items.length; i++) {
+    const imageUrl = _safeString(items[i] && items[i].image_url, 2000);
+    if (!imageUrl) continue;
+    const child = await _instagramCreateMediaContainer(connectionRecord, {
+      image_url: imageUrl,
+      is_carousel_item: true
+    });
+    const childId = _safeString(child && child.id, 240);
+    if (!childId) throw new Error("instagram carousel child container was not created");
+    await _instagramWaitForContainer(connectionRecord, childId);
+    childIds.push(childId);
+  }
+  if (childIds.length < 2) throw new Error("instagram carousel requires at least two valid photos");
+
+  const parent = await _instagramCreateMediaContainer(connectionRecord, {
+    media_type: "CAROUSEL",
+    children: childIds.join(","),
+    caption: _safeString(draft && draft.final_message, 5000)
+  });
+  const creationId = _safeString(parent && parent.id, 240);
+  if (!creationId) throw new Error("instagram carousel container was not created");
+  await _instagramWaitForContainer(connectionRecord, creationId);
+  const published = await _instagramPublishContainer(connectionRecord, creationId);
+  return {
+    creation_id: creationId,
+    id: _safeString(published && published.id, 240),
+    media_type: "CAROUSEL",
+    child_ids: childIds
+  };
+}
+
+function _touchInstagramConnectionPublish(record) {
+  const current = record && typeof record === "object" ? record : _readInstagramConnectionRecord();
+  return _writeInstagramConnectionState(Object.assign({}, current, {
+    connected: !!current.connected,
+    token_status: _safeString(current.token_status, 48) || "valid",
+    last_checked_at: new Date().toISOString(),
+    last_publish_at: new Date().toISOString()
+  }));
 }
 
 async function _facebookPostFeed(connectionRecord, draft) {
@@ -1955,6 +2190,158 @@ app.post("/admin/instagram/disconnect", (req, res) => {
   } catch (err) {
     console.error("/admin/instagram/disconnect failed:", err);
     return res.status(500).json({ ok: false, error: "instagram disconnect failed" });
+  }
+});
+
+app.post("/admin/instagram/preview", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const normalized = _normalizeInstagramDraft(req.body);
+    if (!normalized.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: normalized.errors[0] || "invalid instagram draft",
+        errors: normalized.errors
+      });
+    }
+    const record = _readInstagramConnectionRecord();
+    return res.json({
+      ok: true,
+      preview: {
+        account_name: _safeString(record && record.instagram_account && (record.instagram_account.username || record.instagram_account.name), 160) || INSTAGRAM_ACCOUNT_NAME_TARGET || "Instagram Account",
+        account_id: _safeString(record && record.instagram_account && record.instagram_account.id, 120),
+        page_name: _safeString(record && record.page && record.page.name, 160) || FACEBOOK_PAGE_NAME_TARGET,
+        page_id: _safeString(record && record.page && record.page.id, 120),
+        connected: !!record.connected,
+        token_status: _safeString(record && record.token_status, 48) || "not_connected",
+        section: normalized.draft.section,
+        entity_type: normalized.draft.entity_type,
+        entity_id: normalized.draft.entity_id,
+        entity_label: normalized.draft.entity_label,
+        caption: normalized.draft.caption,
+        link_url: normalized.draft.link_url,
+        image_url: normalized.draft.image_url,
+        selected_photos: normalized.draft.selected_photos,
+        photo_count: Array.isArray(normalized.draft.selected_photos) ? normalized.draft.selected_photos.length : 0,
+        final_message: normalized.draft.final_message,
+        meta: normalized.draft.meta
+      }
+    });
+  } catch (err) {
+    console.error("/admin/instagram/preview failed:", err);
+    return res.status(500).json({ ok: false, error: "instagram preview failed" });
+  }
+});
+
+app.post("/admin/instagram/publish", async (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  const historyItem = {
+    id: "igpub_" + crypto.randomBytes(8).toString("hex"),
+    created_at: new Date().toISOString(),
+    section: "",
+    entity_type: "",
+    entity_id: "",
+    entity_label: "",
+    status: "failed",
+    page_id: "",
+    page_name: "",
+    instagram_account_id: "",
+    instagram_account_name: "",
+    image_url: "",
+    link_url: "",
+    caption: "",
+    final_message: "",
+    instagram_media_id: "",
+    instagram_creation_id: "",
+    error: "",
+    meta: {}
+  };
+
+  try {
+    const normalized = _normalizeInstagramDraft(req.body);
+    if (!normalized.ok) {
+      historyItem.error = normalized.errors.join("; ");
+      _appendInstagramPublishHistory(historyItem);
+      return res.status(400).json({
+        ok: false,
+        error: normalized.errors[0] || "invalid instagram draft",
+        errors: normalized.errors
+      });
+    }
+
+    const draft = normalized.draft;
+    const record = _readInstagramConnectionRecord();
+    if (!record.connected || !(record.instagram_account && record.instagram_account.id) || !_instagramAccessToken(record)) {
+      historyItem.error = "instagram account is not connected";
+      _appendInstagramPublishHistory(historyItem);
+      return res.status(400).json({ ok: false, error: "instagram account is not connected" });
+    }
+
+    historyItem.section = draft.section;
+    historyItem.entity_type = draft.entity_type;
+    historyItem.entity_id = draft.entity_id;
+    historyItem.entity_label = draft.entity_label;
+    historyItem.page_id = _safeString(record.page && record.page.id, 120);
+    historyItem.page_name = _safeString(record.page && record.page.name, 160);
+    historyItem.instagram_account_id = _safeString(record.instagram_account && record.instagram_account.id, 120);
+    historyItem.instagram_account_name = _safeString(record.instagram_account && (record.instagram_account.username || record.instagram_account.name), 160);
+    historyItem.image_url = draft.image_url;
+    historyItem.link_url = draft.link_url;
+    historyItem.caption = draft.caption;
+    historyItem.final_message = draft.final_message;
+    historyItem.meta = Object.assign({}, draft.meta || {}, {
+      photo_count: Array.isArray(draft.selected_photos) ? draft.selected_photos.length : 0,
+      post_kind: draft.post_kind
+    });
+
+    const result = Array.isArray(draft.selected_photos) && draft.selected_photos.length > 1
+      ? await _instagramPublishCarousel(record, draft)
+      : await _instagramPublishSingleImage(record, draft);
+
+    historyItem.status = "success";
+    historyItem.instagram_media_id = _safeString(result && result.id, 240);
+    historyItem.instagram_creation_id = _safeString(result && result.creation_id, 240);
+    historyItem.meta = Object.assign({}, historyItem.meta, {
+      media_type: _safeString(result && result.media_type, 80),
+      child_ids: Array.isArray(result && result.child_ids) ? result.child_ids : []
+    });
+
+    _appendInstagramPublishHistory(historyItem);
+    _touchInstagramConnectionPublish(record);
+
+    return res.json({
+      ok: true,
+      id: historyItem.instagram_media_id,
+      creation_id: historyItem.instagram_creation_id,
+      media_type: historyItem.meta.media_type || "",
+      preview: {
+        account_name: historyItem.instagram_account_name,
+        page_name: historyItem.page_name,
+        final_message: historyItem.final_message
+      }
+    });
+  } catch (err) {
+    historyItem.error = err && err.message ? err.message : "instagram publish failed";
+    _appendInstagramPublishHistory(historyItem);
+    console.error("/admin/instagram/publish failed:", err);
+    return res.status(500).json({ ok: false, error: historyItem.error || "instagram publish failed" });
+  }
+});
+
+app.get("/admin/instagram/history", (req, res) => {
+  allowCors(res, req);
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const limit = Math.max(1, Math.min(100, Number(req.query && req.query.limit) || 20));
+    return res.json({
+      ok: true,
+      items: _readInstagramPublishHistory(limit)
+    });
+  } catch (err) {
+    console.error("/admin/instagram/history failed:", err);
+    return res.status(500).json({ ok: false, error: "instagram history failed" });
   }
 });
 
