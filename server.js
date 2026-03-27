@@ -1,4 +1,4 @@
-﻿console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX) <<<");
+console.log(">>> SERVER FILE VERSION: PATCHED-FULL-2 (WRESTLING SHOWS + CORS FIX) <<<");
 
 const SERVER_BUILD_TAG = "facebook-pages-connect-v3";
 
@@ -2828,7 +2828,7 @@ const SHOWS_SHEET_URL = String(process.env.SHOWS_SHEET_URL || WRESTLING_SHOWS_SH
 const PEOPLE_SHEET_URL = String(process.env.PEOPLE_SHEET_URL || WRESTLING_PEOPLE_SHEET_URL).trim() || WRESTLING_PEOPLE_SHEET_URL;
 
 
-// Stats tab (Fix / Metadata) – gid provided by Chris
+// Stats tab (Fix / Metadata) � gid provided by Chris
 // NOTE: Uses the Google Sheet "export?format=csv" URL style.
 // This will work as long as the sheet (or at least this tab) is readable without auth.
 const STATS_SHEET_URL =
@@ -2836,7 +2836,7 @@ const STATS_SHEET_URL =
 
 
 // =========================================================
-// ✔ FIXED: SmugMug API helper (must be ABOVE all routes)
+// ? FIXED: SmugMug API helper (must be ABOVE all routes)
 // =========================================================
 async function smug(endpoint) {
   const url = `https://api.smugmug.com/api/v2${endpoint}&APIKey=${SMUG_API_KEY}`;
@@ -2856,7 +2856,7 @@ async function smug(endpoint) {
 }
 
 // =========================================================
-// SHEETS → CSV
+// SHEETS ? CSV
 // =========================================================
 app.get("/sheet/bands", async (req, res) => {
   try {
@@ -3349,11 +3349,11 @@ app.get('/index/people', async (req, res) => {
   }
 });
 // =========================================================
-// SMART FOLDER → ALBUMS
+// SMART FOLDER ? ALBUMS
 // =========================================================
 
 // =========================================================
-// ✔ NEW: RESOLVE A SMUGMUG ALBUM URL → AlbumKey (Wrestling)
+// ? NEW: RESOLVE A SMUGMUG ALBUM URL ? AlbumKey (Wrestling)
 // IMPORTANT: This MUST be defined BEFORE /smug/:slug because otherwise
 // /smug/resolve-album gets treated as a band slug and returns Album:[]
 // =========================================================
@@ -3492,7 +3492,7 @@ app.get("/smug/resolve-shop-node", async (req, res) => {
 
 
 // =========================================================
-// ✔ NEW: GLOBAL WRESTLING ALBUM KEYWORD SEARCH (Option A)
+// ? NEW: GLOBAL WRESTLING ALBUM KEYWORD SEARCH (Option A)
 // GET /smug/albums-by-keyword?keyword=...
 // Crawls /Wrestling folder recursively, caches AlbumKey+Title+Url+Keywords,
 // then filters albums whose keyword list matches the query.
@@ -3504,6 +3504,10 @@ const SMUG_WEB_ORIGIN = "https://vmpix.smugmug.com";
 const WRESTLING_KEYWORD_CACHE_TTL_MS = Number(process.env.WRESTLING_KEYWORD_CACHE_TTL_MS || (6 * 60 * 60 * 1000)); // 6h default
 let _wrestlingAlbumIndex = { builtAt: 0, albums: [] };
 let _wrestlingIndexPromise = null;
+const WRESTLING_POSTERS_PATH = "/Wrestling/Posters";
+const WRESTLING_POSTER_CACHE_TTL_MS = Number(process.env.WRESTLING_POSTER_CACHE_TTL_MS || (6 * 60 * 60 * 1000));
+let _wrestlingPosterIndex = { builtAt: 0, albumKey: "", items: [] };
+let _wrestlingPosterIndexPromise = null;
 
 function _smugEndpointFromUri(uri) {
   const s = String(uri || "").trim();
@@ -3965,6 +3969,35 @@ app.get("/smug/albums-by-keyword", async (req, res) => {
 });
 
 
+app.get("/smug/poster-by-date", async (req, res) => {
+  allowCors(res, req);
+  const code = String(req.query.code || "").trim();
+  const force = String(req.query.force || "").trim() === "1";
+  if (!/^\d{6}$/.test(code)) {
+    return res.status(400).json({ error: "invalid code" });
+  }
+  try {
+    const index = await _ensureWrestlingPosterIndex(force);
+    const items = Array.isArray(index && index.items) ? index.items : [];
+    const exact = items.find((item) => String(item.code || "") === code && (_posterCodeFromText(item.fileName) === code));
+    const match = exact || items.find((item) => String(item.code || "") === code) || null;
+    if (!match) {
+      return res.status(404).json({ error: "poster not found", code });
+    }
+    return res.json({
+      ok: true,
+      code,
+      thumbUrl: String(match.thumbUrl || match.fullUrl || "").trim(),
+      fullUrl: String(match.fullUrl || match.thumbUrl || "").trim(),
+      fileName: String(match.fileName || "").trim(),
+      title: String(match.title || "").trim(),
+      imageKey: String(match.imageKey || "").trim()
+    });
+  } catch (err) {
+    console.error("/smug/poster-by-date failed:", err && err.message ? err.message : err);
+    return res.status(500).json({ error: "poster-by-date failed", code });
+  }
+});
 app.get("/smug/:slug", async (req, res) => {
   const slug = req.params.slug;
   const folderFromSheet = req.query.folder;
@@ -4049,7 +4082,7 @@ app.get("/smug/:slug", async (req, res) => {
 });
 
 // =========================================================
-// ALBUM → IMAGES (paged)
+// ALBUM ? IMAGES (paged)
 // =========================================================
 app.get("/smug/album/:albumKey", async (req, res) => {
   const albumKey = req.params.albumKey;
@@ -4087,7 +4120,7 @@ app.get("/smug/album/:albumKey", async (req, res) => {
 });
 
 // =========================================================
-// ✔ NEW: ALBUM METADATA (album keywords)
+// ? NEW: ALBUM METADATA (album keywords)
 // =========================================================
 app.get("/smug/album-meta/:albumKey", async (req, res) => {
   const albumKey = req.params.albumKey;
@@ -4182,7 +4215,7 @@ function fetchStreamWithRedirects(inputUrl, redirectsLeft = 5) {
 
 
 // =========================================================
-// ✔ NEW: ZIP BUILDER (multi-download)
+// ? NEW: ZIP BUILDER (multi-download)
 // Expects: { items: [{ url, filename }, ...] }
 // Returns: application/zip stream
 // =========================================================
@@ -4265,6 +4298,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server listening on http://localhost:" + PORT);
 });
+
 
 
 
