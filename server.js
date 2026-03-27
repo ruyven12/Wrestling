@@ -463,11 +463,11 @@ async function _facebookJson(url) {
   return data;
 }
 
-async function _exchangeFacebookCodeForUserToken(code) {
+async function _exchangeFacebookCodeForUserToken(code, redirectUriOverride) {
   const url = new URL(`${_facebookGraphBase()}/oauth/access_token`);
   url.searchParams.set("client_id", META_APP_ID);
   url.searchParams.set("client_secret", META_APP_SECRET);
-  url.searchParams.set("redirect_uri", META_REDIRECT_URI);
+  url.searchParams.set("redirect_uri", _safeString(redirectUriOverride, 2000) || META_REDIRECT_URI);
   url.searchParams.set("code", String(code || "").trim());
   return _facebookJson(url.toString());
 }
@@ -1650,7 +1650,7 @@ app.get("/admin/facebook/connect/callback", async (req, res) => {
     const code = _safeString(req.query && req.query.code, 1200);
     if (!code) return fail("missing facebook authorization code", statePayload);
 
-    const shortToken = await _exchangeFacebookCodeForUserToken(code);
+    const shortToken = await _exchangeFacebookCodeForUserToken(code, META_REDIRECT_URI);
     let userAccessToken = _safeString(shortToken && shortToken.access_token, 2000);
     let expiresAt = null;
     if (!userAccessToken) return fail("facebook user token missing", statePayload);
@@ -1801,7 +1801,7 @@ app.get("/admin/instagram/connect/callback", async (req, res) => {
     const code = _safeString(req.query && req.query.code, 1200);
     if (!code) return fail("missing instagram authorization code", statePayload);
 
-    const shortToken = await _exchangeFacebookCodeForUserToken(code);
+    const shortToken = await _exchangeFacebookCodeForUserToken(code, META_INSTAGRAM_REDIRECT_URI);
     let userAccessToken = _safeString(shortToken && shortToken.access_token, 2000);
     let expiresAt = null;
     if (!userAccessToken) return fail("instagram user token missing", statePayload);
